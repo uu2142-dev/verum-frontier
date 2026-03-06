@@ -4,12 +4,15 @@ import Image from "next/image";
 
 // ── RHAI/ALICE Math (mirrors Python stack exactly) ────────────────────────
 
-function biasScore(vec: number[]) {
+// Added 'readonly' to the vec parameter to fix the Vercel build error
+function biasScore(vec: readonly number[]) {
   const w = [0.4, -0.3, -0.2, 0.8, 0.3, -0.1, -0.1, -0.2, -0.5, -0.6, 0.7, -0.2];
   let r = vec.reduce((s, v, i) => s + v * w[i], 0);
   return Math.max(0, Math.min(1, (r + 2.5) / 5));
 }
-function componentScores(vec: number[]) {
+
+// Added 'readonly' to fix type mismatch
+function componentScores(vec: readonly number[]) {
   return {
     "STATE MEDIA BIAS":  vec[3],
     "MEAS. INVALIDITY":  1 - vec[9],
@@ -18,16 +21,20 @@ function componentScores(vec: number[]) {
     "SOURCE CAPTURE":    1 - vec[0],
   };
 }
-function confidenceScore(vec: number[]) {
+
+// Added 'readonly' to fix type mismatch
+function confidenceScore(vec: readonly number[]) {
   const r = vec[0]*0.25 + vec[1]*0.15 + vec[2]*0.10 + vec[8]*0.20 + vec[9]*0.20 + vec[11]*0.10;
   const p = vec[10]*0.15 + vec[3]*0.10;
   return Math.max(0, Math.min(1, r - p));
 }
+
 function sha256sim(str: string) {
   let h = 0;
   for (let i = 0; i < str.length; i++) { h = ((h << 5) - h) + str.charCodeAt(i); h |= 0; }
   return Math.abs(h).toString(16).padStart(16, '0');
 }
+
 function buildMerkle(leaves: string[]) {
   let level = [...leaves], tree = [level];
   while (level.length > 1) {
