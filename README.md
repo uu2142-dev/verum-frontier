@@ -5,32 +5,6 @@ Live at: **rabbitholeai.ai**
 
 ---
 
-## Deploy to Vercel in 5 minutes
-
-### Option A — GitHub (recommended)
-1. Push this folder to a GitHub repo
-2. Go to vercel.com → New Project → Import your repo
-3. Vercel auto-detects Next.js — click Deploy
-4. Add custom domain: rabbitholeai.ai in Project Settings → Domains
-
-### Option B — Vercel CLI
-```bash
-npm install -g vercel
-cd verum-frontier
-vercel --prod
-```
-
----
-
-## Local Development
-```bash
-npm install
-npm run dev
-# → http://localhost:3000
-```
-
----
-
 ## Project Structure
 ```
 verum-frontier/
