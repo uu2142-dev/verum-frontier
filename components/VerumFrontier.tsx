@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
+import LiveGate from "@/components/LiveGate";
 
 // ── RHAI/ALICE Math (mirrors Python stack exactly) ────────────────────────
 
@@ -220,6 +221,7 @@ function MerkleView({ data }: { data: { leaves: string[]; root: string } | null 
 // ── Main ──────────────────────────────────────────────────────────────────
 
 export default function VerumFrontier() {
+  const [mode,         setMode]         = useState<"live" | "demo">("live");
   const [activeModel,  setActiveModel]  = useState<Model | null>(null);
   const [hoveredModel, setHoveredModel] = useState<Model | null>(null);
   const [running,      setRunning]      = useState(false);
@@ -346,18 +348,42 @@ export default function VerumFrontier() {
           <div className={`w-2 h-2 rounded-full flex-shrink-0 ${running ? "bg-amber-500 animate-pulse" : "bg-green-500"}`}
                style={{ boxShadow: running ? "0 0 8px #f59e0b" : "0 0 8px #22c55e" }} />
           <h1 className="text-[9px] md:text-[10px] tracking-[0.3em] md:tracking-[0.4em] uppercase font-bold text-white whitespace-nowrap">
-            Verum Frontier // A.L.I.C.E. v1.1
+            Verum Frontier // A.L.I.C.E. v1.2
           </h1>
         </div>
+
+        {/* Mode toggle */}
+        <div className="flex items-center gap-0 font-mono">
+          {([["live", "LIVE GATE"], ["demo", "SIM DEMO"]] as const).map(([m, label]) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className="uppercase"
+              style={{
+                fontSize: 8, letterSpacing: "0.2em", padding: "5px 12px", cursor: "pointer",
+                border: `1px solid ${mode === m ? (m === "live" ? "#2ecc71" : "#c8941a") : "rgba(255,255,255,0.12)"}`,
+                background: mode === m ? (m === "live" ? "rgba(46,204,113,0.1)" : "rgba(200,148,26,0.1)") : "transparent",
+                color: mode === m ? (m === "live" ? "#2ecc71" : "#c8941a") : "rgba(255,255,255,0.35)",
+              }}
+            >
+              {m === "live" ? "● " : ""}{label}
+            </button>
+          ))}
+        </div>
+
         <div className="hidden md:block text-[9px] text-zinc-500 tracking-widest uppercase font-mono">
           {clock}
         </div>
         <div className="hidden lg:block text-[8px] text-zinc-600 tracking-wider uppercase">
-          SOVEREIGN WRAPPER · BIAS LAYER ACTIVE
+          {mode === "live" ? "LIVE COUNCIL · RECEIPTS + SEALS REAL" : "SIMULATED CALIBRATION DEMO"}
         </div>
       </header>
 
-      {/* ── HOTSPOTS ──────────────────────────────────────────────────── */}
+      {/* ── LIVE GATE MODE ────────────────────────────────────────────── */}
+      {mode === "live" && <LiveGate />}
+
+      {/* ── HOTSPOTS (SIM DEMO) ───────────────────────────────────────── */}
+      {mode === "demo" && (
       <div className="absolute inset-0 z-20">
         {MODELS.map((m) => {
           const isActive  = activeModel?.id === m.id;
@@ -426,8 +452,10 @@ export default function VerumFrontier() {
           );
         })}
       </div>
+      )}
 
-      {/* ── PIPELINE PANEL ────────────────────────────────────────────── */}
+      {/* ── PIPELINE PANEL (SIM DEMO) ─────────────────────────────────── */}
+      {mode === "demo" && (
       <div className="panel-in" style={{
         position: "absolute", top: "10%",
         right: panelOpen ? "1.5%" : "-320px",
@@ -446,7 +474,9 @@ export default function VerumFrontier() {
           background: "rgba(4,3,10,0.98)",
         }}>
           <div>
-            <div style={{ fontSize: 8, letterSpacing: "0.25em", color: "rgba(255,255,255,0.3)" }}>A.L.I.C.E. PIPELINE</div>
+            <div style={{ fontSize: 8, letterSpacing: "0.25em", color: "rgba(255,255,255,0.3)" }}>
+              A.L.I.C.E. PIPELINE <span style={{ color: "#c8941a" }}>· SIMULATED</span>
+            </div>
             {activeModel && (
               <div style={{ fontSize: 11, color: activeModel.color, letterSpacing: "0.1em", marginTop: 2, fontWeight: 600 }}>
                 {activeModel.name}
@@ -501,9 +531,10 @@ export default function VerumFrontier() {
           </div>
         )}
       </div>
+      )}
 
-      {/* ── IDLE HINT ─────────────────────────────────────────────────── */}
-      {!panelOpen && (
+      {/* ── IDLE HINT (SIM DEMO) ──────────────────────────────────────── */}
+      {mode === "demo" && !panelOpen && (
         <div style={{
           position: "absolute", bottom: "17%", left: "50%", transform: "translateX(-50%)",
           zIndex: 30, textAlign: "center", pointerEvents: "none",
@@ -512,10 +543,14 @@ export default function VerumFrontier() {
           <div style={{ fontSize: 9, letterSpacing: "0.3em", color: "rgba(212,196,154,0.4)", textTransform: "uppercase" }}>
             Select a Prime — click any figure to execute the pipeline
           </div>
+          <div style={{ fontSize: 8, letterSpacing: "0.2em", color: "#c8941a", textTransform: "uppercase", marginTop: 6 }}>
+            Simulated calibration demo · illustrative values — switch to LIVE GATE for real calls
+          </div>
         </div>
       )}
 
-      {/* ── A.L.I.C.E. BAR ────────────────────────────────────────────── */}
+      {/* ── A.L.I.C.E. BAR (SIM DEMO) ─────────────────────────────────── */}
+      {mode === "demo" && (
       <div className="absolute bottom-10 left-0 right-0 z-50 px-4 md:px-10">
         <div className="bg-black/90 border border-zinc-800 p-4 md:p-6 rounded shadow-2xl backdrop-blur-xl flex items-center gap-4 md:gap-8">
           <div className="flex-shrink-0">
@@ -536,11 +571,12 @@ export default function VerumFrontier() {
             </p>
           </div>
           <div className="text-right border-l border-zinc-900 pl-4 md:pl-8 flex-shrink-0">
-            <div className="text-[9px] text-zinc-500 font-bold">$0.00042 / QUERY</div>
-            <div className="text-[8px] text-zinc-700 uppercase mt-1">Sovereign · Local-First</div>
+            <div className="text-[9px] text-amber-600 font-bold">SIMULATED VALUES</div>
+            <div className="text-[8px] text-zinc-700 uppercase mt-1">Concept demo — live gate is real</div>
           </div>
         </div>
       </div>
+      )}
 
       {/* ── FOOTER ────────────────────────────────────────────────────── */}
       <footer className="absolute bottom-0 left-0 right-0 z-50 px-3 py-1 bg-black border-t border-white/5 flex justify-between items-center">
