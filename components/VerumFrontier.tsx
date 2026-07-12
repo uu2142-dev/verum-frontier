@@ -380,7 +380,7 @@ export default function VerumFrontier() {
       </header>
 
       {/* ── LIVE GATE MODE ────────────────────────────────────────────── */}
-      {mode === "live" && <LiveGate />}
+      {mode === "live" && <LiveGate onFallbackToDemo={() => setMode("demo")} />}
 
       {/* ── HOTSPOTS (SIM DEMO) ───────────────────────────────────────── */}
       {mode === "demo" && (
@@ -582,7 +582,13 @@ export default function VerumFrontier() {
       <footer className="absolute bottom-0 left-0 right-0 z-50 px-3 py-1 bg-black border-t border-white/5 flex justify-between items-center">
         <span className="text-[7px] text-zinc-600 tracking-[0.15em] hidden md:block">RABBIT HOLE AI // MIT LICENSE</span>
         <span className="text-[7px] text-zinc-700 tracking-[0.1em] hidden lg:block">BIAS CHECKER → ANTI-DATA → LLM → RESPONSE AUDIT → MERKLE ARCHIVIST</span>
-        <span className="text-[7px] text-zinc-600 tracking-[0.15em]">JEREMIAH DAWSON · rabbitholeai.ai</span>
+        <span className="text-[7px] text-zinc-600 tracking-[0.15em]">
+          <a href="/terms" className="hover:text-zinc-400">TERMS</a>
+          {" · "}
+          <a href="/privacy" className="hover:text-zinc-400">PRIVACY</a>
+          {" · "}
+          JEREMIAH DAWSON · rabbitholeai.ai
+        </span>
       </footer>
 
     </main>

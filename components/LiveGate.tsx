@@ -98,8 +98,9 @@ function SealView({ ex }: { ex: Exchange }) {
 
 // ── Main ─────────────────────────────────────────────────────────────────
 
-export default function LiveGate() {
+export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () => void }) {
   const [models, setModels]     = useState<ModelInfo[]>([]);
+  const [bootFailed, setBootFailed] = useState(false);
   const [modelId, setModelId]   = useState<string>("");
   const [quota, setQuota]       = useState<Quota | null>(null);
   const [thread, setThread]     = useState<Exchange[]>([]);
@@ -116,13 +117,17 @@ export default function LiveGate() {
     startedRef.current = new Date().toISOString();
     sha256Hex("VERUM_FRONTIER_SESSION_GENESIS" + startedRef.current).then(h => { chainRef.current = h; });
     fetch("/api/chat")
-      .then(r => r.json())
+      .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
       .then(d => {
-        setModels(d.models ?? []);
-        if (d.models?.length) setModelId(d.models[0].id);
+        if (!d.models?.length) throw new Error("no models");
+        setModels(d.models);
+        setModelId(d.models[0].id);
         setQuota(d.quota ?? null);
       })
-      .catch(() => setError("Could not reach the gate. Refresh to retry."));
+      .catch(() => {
+        setBootFailed(true);
+        setError("The live gate is unavailable right now (configuration or upstream issue).");
+      });
   }, []);
 
   useEffect(() => {
@@ -314,7 +319,17 @@ export default function LiveGate() {
             fontFamily: "monospace", fontSize: 9, color: "#e74c3c",
             border: "1px solid rgba(231,76,60,0.35)", background: "rgba(231,76,60,0.06)",
             padding: "6px 10px", marginBottom: 6,
-          }}>⚠ {error}</div>
+            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+          }}>
+            <span>⚠ {error}</span>
+            {bootFailed && onFallbackToDemo && (
+              <button onClick={onFallbackToDemo} style={{
+                fontFamily: "monospace", fontSize: 8, letterSpacing: "0.15em", cursor: "pointer",
+                padding: "4px 10px", border: "1px solid rgba(200,148,26,0.5)",
+                background: "rgba(200,148,26,0.1)", color: "#c8941a", whiteSpace: "nowrap",
+              }}>VIEW SIM DEMO INSTEAD</button>
+            )}
+          </div>
         )}
 
         {/* model chips */}
