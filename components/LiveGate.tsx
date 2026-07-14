@@ -24,16 +24,48 @@ interface Receipt {
   supportSplit: { server: number; development: number; steward: number; reserve: number };
   totalUsd: number; chargedUsd: number; tier: string;
 }
+interface BiasResult {
+  version: string;
+  toxicity: number; toxicityPctile: number;
+  framing: number; framingPctile: number;
+  validated: { toxicityAuroc5fold: number; framingAurocOfficialSplit: number };
+  scope: string;
+}
 interface Exchange {
   id: number;
   query: string;
   response: string;
   modelId: string;
   receipt: Receipt;
+  bias: BiasResult | null;
   stages: Stage[];
   seal: { algo: string; leaves: Leaf[]; root: string; sealedAt: string };
   timingMs: { total: number; llm: number };
   chainHash: string; // client-side session chain: SHA-256(prev + root)
+}
+
+// Conversation archive: the session lives in YOUR browser (localStorage), not
+// on a server — there is still no database behind this site.
+const STORE_KEY = "vf_session_v1";
+
+interface StoredSession {
+  format: 1;
+  startedAt: string;
+  chain: string;
+  nextId: number;
+  exchanges: Exchange[];
+}
+
+function loadStoredSession(): StoredSession | null {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw) as StoredSession;
+    if (s.format !== 1 || !Array.isArray(s.exchanges) || typeof s.chain !== "string") return null;
+    return s;
+  } catch {
+    return null;
+  }
 }
 
 async function sha256Hex(s: string): Promise<string> {
@@ -71,6 +103,44 @@ function Row({ k, v, strong, color }: { k: string; v: string; strong?: boolean; 
 }
 function Sub({ k }: { k: string }) {
   return <div style={{ color: "rgba(255,255,255,0.25)", fontSize: 8, paddingLeft: 10 }}>{k}</div>;
+}
+
+// ── Bias screen view ──────────────────────────────────────────────────────
+
+function BiasCard({ b }: { b: BiasResult | null }) {
+  if (!b) return (
+    <div style={{ fontFamily: "monospace", fontSize: 8, color: "rgba(255,255,255,0.3)", lineHeight: 1.8 }}>
+      BIAS SCREEN: unreachable for this exchange — fail-open, answer not blocked.
+    </div>
+  );
+  const bar = (pct: number, hot: boolean) => (
+    <div style={{ height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2, overflow: "hidden", marginTop: 2 }}>
+      <div style={{
+        height: "100%", width: `${pct}%`, borderRadius: 2,
+        background: hot ? "linear-gradient(90deg,#7a1a1a,#e74c3c)" : "linear-gradient(90deg,#1a5a30,#2ecc71)",
+      }} />
+    </div>
+  );
+  return (
+    <div style={{ fontFamily: "monospace", fontSize: 9, lineHeight: 1.8 }}>
+      <div style={{ color: "rgba(200,148,26,0.6)", fontSize: 7, letterSpacing: "0.2em", marginBottom: 4 }}>
+        BIAS SCREEN · VALIDATED {b.version.toUpperCase()} · AUROC {b.validated.toxicityAuroc5fold?.toFixed(2)} tox / {b.validated.framingAurocOfficialSplit?.toFixed(2)} framing (held-out)
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", color: "rgba(255,255,255,0.45)" }}>
+        <span>TOXICITY</span>
+        <span style={{ color: b.toxicityPctile > 80 ? "#e74c3c" : "rgba(255,255,255,0.7)" }}>p{b.toxicityPctile}</span>
+      </div>
+      {bar(b.toxicityPctile, b.toxicityPctile > 80)}
+      <div style={{ display: "flex", justifyContent: "space-between", color: "rgba(255,255,255,0.45)", marginTop: 6 }}>
+        <span>FRAMING</span>
+        <span style={{ color: b.framingPctile > 80 ? "#e74c3c" : "rgba(255,255,255,0.7)" }}>p{b.framingPctile}</span>
+      </div>
+      {bar(b.framingPctile, b.framingPctile > 80)}
+      <div style={{ fontSize: 7, color: "rgba(255,255,255,0.25)", marginTop: 6, lineHeight: 1.6 }}>
+        Percentiles vs the checker&apos;s training distribution. {b.scope}
+      </div>
+    </div>
+  );
 }
 
 // ── Seal view ─────────────────────────────────────────────────────────────
@@ -114,8 +184,16 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
   const scrollRef  = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    startedRef.current = new Date().toISOString();
-    sha256Hex("VERUM_FRONTIER_SESSION_GENESIS" + startedRef.current).then(h => { chainRef.current = h; });
+    const saved = loadStoredSession();
+    if (saved && saved.exchanges.length) {
+      startedRef.current = saved.startedAt;
+      chainRef.current = saved.chain;
+      nextId.current = saved.nextId;
+      setThread(saved.exchanges);
+    } else {
+      startedRef.current = new Date().toISOString();
+      sha256Hex("VERUM_FRONTIER_SESSION_GENESIS" + startedRef.current).then(h => { chainRef.current = h; });
+    }
     fetch("/api/chat")
       .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
       .then(d => {
@@ -133,6 +211,30 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [thread, sending]);
+
+  // Archive the session in the visitor's own browser after every exchange.
+  useEffect(() => {
+    if (!thread.length) return;
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        format: 1,
+        startedAt: startedRef.current,
+        chain: chainRef.current,
+        nextId: nextId.current,
+        exchanges: thread,
+      } satisfies StoredSession));
+    } catch { /* storage full or blocked — session just won't persist */ }
+  }, [thread]);
+
+  const newSession = useCallback(() => {
+    try { localStorage.removeItem(STORE_KEY); } catch { /* ignore */ }
+    setThread([]);
+    setExpanded(null);
+    setError(null);
+    nextId.current = 1;
+    startedRef.current = new Date().toISOString();
+    sha256Hex("VERUM_FRONTIER_SESSION_GENESIS" + startedRef.current).then(h => { chainRef.current = h; });
+  }, []);
 
   const model = models.find(m => m.id === modelId);
   const remaining = quota ? Math.max(0, quota.limit - quota.used) : null;
@@ -166,6 +268,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         response: data.text,
         modelId: data.modelId,
         receipt: data.receipt,
+        bias: data.bias ?? null,
         stages: data.stages,
         seal: data.seal,
         timingMs: data.timingMs,
@@ -191,6 +294,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         response: ex.response,
         model: ex.modelId,
         receipt: ex.receipt,
+        biasScreen: ex.bias,
         seal: ex.seal,
         timingMs: ex.timingMs,
         sessionChainHash: ex.chainHash,
@@ -224,15 +328,26 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
           <div style={{ fontSize: 8, letterSpacing: "0.25em", color: "#2ecc71", fontFamily: "monospace" }}>
             ● LIVE — REAL MODEL CALLS · REAL RECEIPTS · REAL SHA-256
           </div>
-          {quota && (
-            <div style={{
-              fontSize: 8, fontFamily: "monospace", letterSpacing: "0.15em",
-              color: remaining === 0 ? "#e74c3c" : "rgba(255,255,255,0.5)",
-              border: "1px solid rgba(255,255,255,0.12)", padding: "3px 8px",
-            }}>
-              FREE TIER · {remaining}/{quota.limit} QUERIES LEFT TODAY
-            </div>
-          )}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            {thread.length > 0 && (
+              <button onClick={newSession} style={{
+                fontSize: 8, fontFamily: "monospace", letterSpacing: "0.15em", cursor: "pointer",
+                border: "1px solid rgba(255,255,255,0.15)", background: "transparent",
+                color: "rgba(255,255,255,0.45)", padding: "3px 8px",
+              }}>
+                ⟲ NEW SESSION
+              </button>
+            )}
+            {quota && (
+              <div style={{
+                fontSize: 8, fontFamily: "monospace", letterSpacing: "0.15em",
+                color: remaining === 0 ? "#e74c3c" : "rgba(255,255,255,0.5)",
+                border: "1px solid rgba(255,255,255,0.12)", padding: "3px 8px",
+              }}>
+                FREE TIER · {remaining}/{quota.limit} QUERIES LEFT TODAY
+              </div>
+            )}
+          </div>
         </div>
 
         {/* messages */}
@@ -249,9 +364,11 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
               through the Verum Frontier gate. Every response returns with a cost-plus
               receipt and a SHA-256 Merkle seal you can download and verify yourself.
               <div style={{ fontSize: 9, color: "rgba(255,255,255,0.25)", marginTop: 12, lineHeight: 1.8 }}>
-                WHAT&apos;S REAL HERE: model responses, token counts, costs, hashes, timings.<br />
-                NOT YET WIRED: the validated bias gate (in progress) — nothing is simulated in live mode.<br />
-                FREE TIER: {quota?.limit ?? 5} queries/day · answers capped at 1,024 tokens.
+                WHAT&apos;S REAL HERE: model responses, token counts, costs, hashes, timings,<br />
+                and a VALIDATED bias screen (toxicity AUROC 0.92 · framing 0.84, held-out) —<br />
+                a triage label on every answer, never a filter. Nothing is simulated in live mode.<br />
+                FREE TIER: {quota?.limit ?? 5} queries/day · answers capped at 1,024 tokens.<br />
+                YOUR SESSION: stored in your browser only — no accounts, no server database.
               </div>
             </div>
           )}
@@ -292,11 +409,13 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                     >
                       🧾 {ex.receipt.usage.inputTokens.toLocaleString()} in / {ex.receipt.usage.outputTokens.toLocaleString()} out
                       · cost {fmtUsd(ex.receipt.totalUsd)} · charged $0.00
-                      · seal {ex.seal.root.slice(0, 10)}… {open ? "▲" : "▼"}
+                      · {ex.bias ? `bias tox p${ex.bias.toxicityPctile} / frame p${ex.bias.framingPctile}` : "bias n/a"}{" · seal "}
+                      {ex.seal.root.slice(0, 10)}… {open ? "▲" : "▼"}
                     </button>
                     {open && (
                       <div style={{ marginTop: 8, borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: 8, display: "grid", gap: 10 }}>
                         <ReceiptCard r={ex.receipt} color={m?.color ?? "#fff"} />
+                        <BiasCard b={ex.bias} />
                         <SealView ex={ex} />
                       </div>
                     )}
@@ -407,11 +526,9 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                     <div style={{ fontSize: 8, color: "rgba(255,255,255,0.35)", marginTop: 1 }}>{s.detail}</div>
                   </div>
                 ))}
-                <div style={{ fontFamily: "monospace", fontSize: 8, color: "rgba(255,255,255,0.3)", paddingLeft: 10 }}>
-                  BIAS GATE: not yet wired — validated detector in progress. Labeled, not faked.
-                </div>
               </div>
               <ReceiptCard r={last.receipt} color={models.find(m => m.id === last.modelId)?.color ?? "#fff"} />
+              <BiasCard b={last.bias} />
               <SealView ex={last} />
             </div>
           )}

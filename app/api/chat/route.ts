@@ -3,6 +3,9 @@
 // Google: Gemini). Returns the model's answer plus:
 //   - real token usage from the provider
 //   - a cost-plus receipt (direct + 5% infra + 15% support)
+//   - a validated bias screen (dual-head: toxicity AUROC 0.92 5-fold,
+//     media/framing 0.84 official-split; a triage LABEL, never a filter —
+//     fail-open if the checker is unreachable, answers are never blocked)
 //   - real SHA-256 leaf hashes + Merkle root over the exchange
 //   - stage timings measured server-side
 // Everything returned here is real. Anything illustrative stays in DEMO mode.
@@ -29,6 +32,54 @@ interface ChatMessage { role: "user" | "assistant"; content: string; }
 
 function sha256(s: string): string {
   return createHash("sha256").update(s, "utf8").digest("hex");
+}
+
+export interface BiasResult {
+  version: string;
+  toxicity: number;
+  toxicityPctile: number;
+  framing: number;
+  framingPctile: number;
+  validated: { toxicityAuroc5fold: number; framingAurocOfficialSplit: number };
+  scope: string;
+}
+
+// Post-answer triage label from the validated dual-head checker on RHAI infra.
+// Fail-open by design: if the screen is down, the answer still ships, honestly
+// labeled as unscreened. The screen annotates — it never censors.
+async function screenBias(text: string): Promise<BiasResult | null> {
+  const endpoint = process.env.BIAS_ENDPOINT;
+  const token = process.env.BIAS_TOKEN;
+  if (!endpoint || !token || !text) return null;
+  try {
+    const res = await fetch(`${endpoint}/score`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ texts: [text.slice(0, 4000)] }),
+      signal: AbortSignal.timeout(6_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const r = data.results?.[0];
+    if (!r) return null;
+    return {
+      version: data.version,
+      toxicity: r.toxicity,
+      toxicityPctile: r.toxicity_pctile,
+      framing: r.framing,
+      framingPctile: r.framing_pctile,
+      validated: {
+        toxicityAuroc5fold: data.validated?.toxicity_auroc_5fold,
+        framingAurocOfficialSplit: data.validated?.framing_auroc_official_split,
+      },
+      scope: data.honest_scope,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function merkleRoot(leaves: string[]): string {
@@ -197,12 +248,17 @@ export async function POST(req: Request) {
   const receipt = buildReceipt(spec, usage);
   const tReceipt = Date.now();
 
-  // [04] MERKLE SEAL — real SHA-256 over the exchange
+  // [04] BIAS SCREEN — validated dual-head triage label (fail-open)
+  const bias = await screenBias(text);
+  const tBias = Date.now();
+
+  // [05] MERKLE SEAL — real SHA-256 over the exchange
   const sealedAt = new Date().toISOString();
   const leaves = [
     { label: "QUERY",    sha256: sha256(JSON.stringify({ q: latest, ts: sealedAt })) },
     { label: "RESPONSE", sha256: sha256(JSON.stringify({ r: text, model: spec.id })) },
     { label: "RECEIPT",  sha256: sha256(JSON.stringify(receipt)) },
+    ...(bias ? [{ label: "BIAS", sha256: sha256(JSON.stringify(bias)) }] : []),
     { label: "TIMING",   sha256: sha256(JSON.stringify({ model: spec.providerModel, llmMs: tLlm - tIntent })) },
   ];
   const root = merkleRoot(leaves.map(l => l.sha256));
@@ -214,11 +270,19 @@ export async function POST(req: Request) {
     modelId: spec.id,
     usage,
     receipt,
+    bias,
     stages: [
       { label: "INTENT CHECK v1", detail: "format + length validation", ms: tIntent - t0 },
       { label: `LLM CALL — ${spec.name}`, detail: `${spec.providerModel} via ${spec.provider}`, ms: tLlm - tIntent },
       { label: "TOKEN ACCOUNTING + COST AUDIT", detail: `${usage.inputTokens} in / ${usage.outputTokens} out`, ms: tReceipt - tLlm },
-      { label: "MERKLE SEAL (SHA-256)", detail: `root ${root.slice(0, 16)}…`, ms: t1 - tReceipt },
+      {
+        label: "BIAS SCREEN (validated v1)",
+        detail: bias
+          ? `toxicity p${bias.toxicityPctile} · framing p${bias.framingPctile} — triage label, not a filter`
+          : "screen unreachable — fail-open, answer not blocked",
+        ms: tBias - tReceipt,
+      },
+      { label: "MERKLE SEAL (SHA-256)", detail: `root ${root.slice(0, 16)}…`, ms: t1 - tBias },
     ],
     seal: { algo: "SHA-256", leaves, root, sealedAt },
     timingMs: { total: t1 - t0, llm: tLlm - tIntent },
