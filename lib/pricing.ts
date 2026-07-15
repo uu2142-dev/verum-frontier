@@ -108,8 +108,8 @@ export interface Receipt {
   supportUsd: number;    // 15% of direct
   supportSplit: { server: number; development: number; steward: number; reserve: number };
   totalUsd: number;      // direct × 1.20
-  chargedUsd: number;    // 0 on the free tier
-  tier: "free";
+  chargedUsd: number;    // 0 on the free tier; exact totalUsd when paid from credits
+  tier: "free" | "credits";
 }
 
 const usd = (v: number) => Number(v.toFixed(9));

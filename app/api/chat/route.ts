@@ -21,6 +21,8 @@ import {
 import { NextResponse } from "next/server";
 import { MODEL_REGISTRY, getModel, buildReceipt, type ModelSpec, type Usage } from "@/lib/pricing";
 import { FREE_DAILY_LIMIT, QUOTA_COOKIE, decodeQuota, encodeQuota, quotaResetIso } from "@/lib/quota";
+import { debitWallet, walletBalance } from "@/lib/ledger";
+import { stripeConfigured, stripeTestMode } from "@/lib/stripe";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -278,6 +280,7 @@ export async function GET(req: Request) {
       inPerM: m.inPerM, outPerM: m.outPerM, note: m.note,
     })),
     quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
+    payments: { enabled: stripeConfigured(), testMode: stripeTestMode() },
     sealKey: k
       ? {
           alg: "Ed25519", keyId: k.keyId, publicKeySpkiB64: k.spkiB64,
@@ -293,7 +296,12 @@ export async function POST(req: Request) {
   const t0 = Date.now();
 
   // [01] INTENT CHECK v1 — format + length validation only (honestly scoped)
-  let body: { modelId?: string; messages?: ChatMessage[]; memories?: MemoryIn[] };
+  let body: {
+    modelId?: string;
+    messages?: ChatMessage[];
+    memories?: MemoryIn[];
+    wallet?: { id?: string; token?: string };
+  };
   try {
     body = await req.json();
   } catch {
@@ -322,11 +330,25 @@ export async function POST(req: Request) {
   }
 
   // Free-tier quota
+  // Paid path: wallet credentials are verified against the ledger BEFORE the
+  // LLM call (so fake credentials can't bypass the free-tier gate), and the
+  // exact cost-plus total is debited after the answer.
+  const wallet = (body.wallet?.id && body.wallet?.token)
+    ? { id: String(body.wallet.id), token: String(body.wallet.token) }
+    : null;
+  let paid = false;
+  if (wallet) {
+    const b = await walletBalance(wallet.id, wallet.token);
+    paid = !!(b.ok && b.data && b.data.balance_usd >= 0.01);
+  }
+
   const q = decodeQuota(getCookie(req, QUOTA_COOKIE));
-  if (q.n >= FREE_DAILY_LIMIT) {
+  if (!paid && q.n >= FREE_DAILY_LIMIT) {
     return NextResponse.json(
       {
-        error: "Free tier exhausted for today.",
+        error: wallet
+          ? "Wallet is empty or invalid, and the free tier is exhausted for today."
+          : "Free tier exhausted for today.",
         quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
       },
       { status: 429 },
@@ -396,7 +418,32 @@ export async function POST(req: Request) {
   const bias = await screenBias(text);
   const tBias = Date.now();
 
-  // [06] MERKLE SEAL — real SHA-256 over the exchange, Ed25519-signed
+  // [06] CREDITS DEBIT (paid path) — exact cost-plus total from the ledger.
+  // Failure modes never bill the visitor: ledger down or drained mid-flight
+  // means the answer ships uncharged with an honest label.
+  let walletOut: { balanceUsd: number; insufficient?: boolean } | null = null;
+  let debitDetail: string | null = null;
+  if (paid && wallet) {
+    const d = await debitWallet(
+      wallet.id, wallet.token, receipt.totalUsd,
+      `chat ${spec.id} ${usage.inputTokens}in/${usage.outputTokens}out`,
+    );
+    if (d.ok && d.data) {
+      receipt.chargedUsd = d.data.debited_usd;
+      receipt.tier = "credits";
+      walletOut = { balanceUsd: d.data.balance_usd };
+      debitDetail = `charged ${d.data.debited_usd.toFixed(6)} USD · balance $${d.data.balance_usd.toFixed(6)}`;
+    } else if (d.status === 402) {
+      walletOut = { balanceUsd: 0, insufficient: true };
+      debitDetail = "balance drained mid-flight — NOT charged; top up to stay on credits";
+    } else {
+      walletOut = null;
+      debitDetail = "ledger unreachable — NOT charged (our loss, not yours)";
+    }
+  }
+  const tDebit = Date.now();
+
+  // [07] MERKLE SEAL — real SHA-256 over the exchange, Ed25519-signed
   const sealedAt = new Date().toISOString();
   const leaves = [
     { label: "QUERY",    sha256: sha256(JSON.stringify({ q: latest, ts: sealedAt })) },
@@ -410,7 +457,8 @@ export async function POST(req: Request) {
   const sig = signRoot(root, sealedAt);
   const t1 = Date.now();
 
-  const newQuota = { d: q.d, n: q.n + 1 };
+  // Paid queries do not consume the free-tier quota.
+  const newQuota = paid ? { d: q.d, n: q.n } : { d: q.d, n: q.n + 1 };
   const res = NextResponse.json({
     text,
     modelId: spec.id,
@@ -418,6 +466,7 @@ export async function POST(req: Request) {
     receipt,
     bias,
     memoryRecall,
+    wallet: walletOut,
     stages: [
       { label: "INTENT CHECK v1", detail: "format + length validation", ms: tIntent - t0 },
       {
@@ -438,10 +487,13 @@ export async function POST(req: Request) {
           : "screen unreachable — fail-open, answer not blocked",
         ms: tBias - tReceipt,
       },
+      ...(debitDetail !== null
+        ? [{ label: "CREDITS DEBIT (prepaid ledger)", detail: debitDetail, ms: tDebit - tBias }]
+        : []),
       {
         label: "MERKLE SEAL (SHA-256)",
         detail: `root ${root.slice(0, 16)}…${sig ? ` · signed Ed25519 (key ${sig.keyId})` : " · unsigned (no signing key)"}`,
-        ms: t1 - tBias,
+        ms: t1 - tDebit,
       },
     ],
     seal: { algo: "SHA-256", leaves, root, sealedAt, ...(sig ? { sig } : {}) },

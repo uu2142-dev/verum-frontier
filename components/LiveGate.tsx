@@ -53,6 +53,33 @@ interface Exchange {
 // on a server — there is still no database behind this site.
 const STORE_KEY = "vf_session_v1";
 
+// Prepaid credits wallet — credentials live only in this browser. The wallet
+// token is issued exactly once at claim time; losing it means losing the
+// wallet (by design: we hold balances, never identities).
+const WALLET_KEY = "vf_wallet_v1";
+
+interface WalletState {
+  id: string;
+  token: string;
+  balanceUsd: number;
+}
+
+function loadWallet(): WalletState | null {
+  try {
+    const w = JSON.parse(localStorage.getItem(WALLET_KEY) ?? "null");
+    return (w && typeof w.id === "string" && typeof w.token === "string") ? w : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveWallet(w: WalletState | null) {
+  try {
+    if (w) localStorage.setItem(WALLET_KEY, JSON.stringify(w));
+    else localStorage.removeItem(WALLET_KEY);
+  } catch { /* ignore */ }
+}
+
 interface StoredSession {
   format: 1;
   startedAt: string;
@@ -162,7 +189,11 @@ function ReceiptCard({ r, color }: { r: Receipt; color: string }) {
       <Sub k={`server 30% · development 40% · steward 20% · reserve 10%`} />
       <div style={{ borderTop: "1px solid rgba(255,255,255,0.12)", margin: "4px 0" }} />
       <Row k="YOUR COST" v={fmtUsd(r.totalUsd)} strong color="#c8941a" />
-      <Row k="CHARGED TODAY" v={`${fmtUsd(r.chargedUsd)} — FREE TIER`} color="#2ecc71" />
+      <Row
+        k="CHARGED"
+        v={`${fmtUsd(r.chargedUsd)} — ${r.tier === "credits" ? "CREDITS" : "FREE TIER"}`}
+        color={r.tier === "credits" ? "#c8941a" : "#2ecc71"}
+      />
     </div>
   );
 }
@@ -266,6 +297,11 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
   const [memCount, setMemCount] = useState(0);
   const [confirmForget, setConfirmForget] = useState(false);
   const [sealKey, setSealKey] = useState<{ alg: string; keyId: string; publicKeySpkiB64: string; signedPayloadFormat: string } | null>(null);
+  const [payments, setPayments] = useState<{ enabled: boolean; testMode: boolean }>({ enabled: false, testMode: false });
+  const [wallet, setWallet] = useState<WalletState | null>(null);
+  const [buyOpen, setBuyOpen] = useState(false);
+  const [buying, setBuying] = useState(false);
+  const [claimNote, setClaimNote] = useState<string | null>(null);
   const chainRef   = useRef<string>("");
   const startedRef = useRef<string>("");
   const nextId     = useRef(1);
@@ -273,6 +309,41 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
 
   useEffect(() => {
     setMemCount(loadMemory().length);
+    setWallet(loadWallet());
+
+    // Returning from Stripe checkout: claim the session into a wallet.
+    const params = new URLSearchParams(window.location.search);
+    const cs = params.get("credit_session");
+    if (cs) {
+      window.history.replaceState(null, "", window.location.pathname);
+      fetch("/api/credits/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: cs }),
+      })
+        .then(r => r.json().then(d => ({ ok: r.ok, d })))
+        .then(({ ok, d }) => {
+          if (!ok) { setClaimNote(`⚠ ${d.error ?? "Claim failed."}`); return; }
+          if (d.walletToken) {
+            const w = { id: d.walletId, token: d.walletToken, balanceUsd: d.balanceUsd };
+            saveWallet(w);
+            setWallet(w);
+            setClaimNote(`✓ Credits claimed: $${d.balanceUsd.toFixed(2)}${d.testMode ? " (TEST MODE — no real charge)" : ""}`);
+          } else {
+            const existing = loadWallet();
+            if (existing && existing.id === d.walletId) {
+              const w = { ...existing, balanceUsd: d.balanceUsd };
+              saveWallet(w);
+              setWallet(w);
+              setClaimNote(`✓ Wallet refreshed: $${d.balanceUsd.toFixed(2)}`);
+            } else {
+              setClaimNote("⚠ This checkout was already claimed in another browser — credits live where they were first claimed.");
+            }
+          }
+        })
+        .catch(() => setClaimNote("⚠ Claim failed — your payment is safe; reload to retry."));
+    }
+
     const saved = loadStoredSession();
     if (saved && saved.exchanges.length) {
       startedRef.current = saved.startedAt;
@@ -291,6 +362,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         setModelId(d.models[0].id);
         setQuota(d.quota ?? null);
         setSealKey(d.sealKey ?? null);
+        setPayments(d.payments ?? { enabled: false, testMode: false });
       })
       .catch(() => {
         setBootFailed(true);
@@ -315,6 +387,25 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
       } satisfies StoredSession));
     } catch { /* storage full or blocked — session just won't persist */ }
   }, [thread]);
+
+  const buyCredits = useCallback(async (amountUsd: number) => {
+    setBuying(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/credits/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amountUsd }),
+      });
+      const d = await res.json();
+      if (!res.ok || !d.url) { setError(d.error ?? "Checkout failed."); return; }
+      window.location.href = d.url; // Stripe-hosted checkout
+    } catch {
+      setError("Checkout failed — network error.");
+    } finally {
+      setBuying(false);
+    }
+  }, []);
 
   const newSession = useCallback(() => {
     try { localStorage.removeItem(STORE_KEY); } catch { /* ignore */ }
@@ -355,6 +446,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
             query: m.query, response: m.response, modelId: m.modelId,
             sealedAt: m.sealedAt, root: m.root, leaves: m.leaves, sig: m.sig,
           })),
+          ...(wallet && wallet.balanceUsd > 0 ? { wallet: { id: wallet.id, token: wallet.token } } : {}),
         }),
       });
       const data = await res.json();
@@ -389,13 +481,21 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
       saveMemory(mem);
       setMemCount(Math.min(mem.length, 300));
       setQuota(data.quota);
+      if (data.wallet) {
+        setWallet(w => {
+          if (!w) return w;
+          const nw = { ...w, balanceUsd: data.wallet.balanceUsd };
+          saveWallet(nw);
+          return nw;
+        });
+      }
       setInput("");
     } catch {
       setError("Network error — the query was not charged against your quota.");
     } finally {
       setSending(false);
     }
-  }, [input, sending, modelId, thread]);
+  }, [input, sending, modelId, thread, wallet]);
 
   const downloadSession = useCallback(() => {
     const payload = {
@@ -447,6 +547,20 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
             ● LIVE — REAL MODEL CALLS · REAL RECEIPTS · REAL SHA-256
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            {payments.enabled && (
+              <button
+                onClick={() => setBuyOpen(o => !o)}
+                style={{
+                  fontSize: 8, fontFamily: "monospace", letterSpacing: "0.15em", cursor: "pointer",
+                  border: `1px solid ${wallet ? "rgba(200,148,26,0.5)" : "rgba(255,255,255,0.15)"}`,
+                  background: wallet ? "rgba(200,148,26,0.08)" : "transparent",
+                  color: wallet ? "#c8941a" : "rgba(255,255,255,0.45)", padding: "3px 8px",
+                }}
+              >
+                💳 {wallet ? `$${wallet.balanceUsd.toFixed(4)} CREDITS` : "BUY CREDITS"}
+                {payments.testMode ? " · TEST" : ""} {buyOpen ? "▲" : "▼"}
+              </button>
+            )}
             {memCount > 0 && (
               <button
                 onClick={() => {
@@ -490,6 +604,50 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
             )}
           </div>
         </div>
+
+        {/* buy credits row */}
+        {buyOpen && payments.enabled && (
+          <div style={{
+            display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
+            border: "1px solid rgba(200,148,26,0.3)", background: "rgba(200,148,26,0.05)",
+            padding: "8px 10px", marginBottom: 8, fontFamily: "monospace",
+          }}>
+            <span style={{ fontSize: 8, letterSpacing: "0.15em", color: "rgba(255,255,255,0.5)" }}>
+              PREPAID CREDITS · each answer debits its exact cost-plus total
+            </span>
+            {[5, 10, 25].map(a => (
+              <button key={a} onClick={() => buyCredits(a)} disabled={buying} style={{
+                fontSize: 9, fontFamily: "monospace", cursor: "pointer", padding: "4px 12px",
+                border: "1px solid rgba(200,148,26,0.5)", background: "rgba(200,148,26,0.12)",
+                color: "#c8941a", opacity: buying ? 0.4 : 1,
+              }}>
+                ${a}
+              </button>
+            ))}
+            {payments.testMode && (
+              <span style={{ fontSize: 8, color: "#e74c3c", letterSpacing: "0.08em" }}>
+                STRIPE TEST MODE — no real charges. Test card 4242 4242 4242 4242, any future expiry, any CVC.
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* claim result */}
+        {claimNote && (
+          <div style={{
+            fontFamily: "monospace", fontSize: 9,
+            color: claimNote.startsWith("✓") ? "#2ecc71" : "#e74c3c",
+            border: `1px solid ${claimNote.startsWith("✓") ? "rgba(46,204,113,0.35)" : "rgba(231,76,60,0.35)"}`,
+            background: claimNote.startsWith("✓") ? "rgba(46,204,113,0.06)" : "rgba(231,76,60,0.06)",
+            padding: "6px 10px", marginBottom: 8,
+            display: "flex", justifyContent: "space-between", gap: 10,
+          }}>
+            <span>{claimNote}</span>
+            <button onClick={() => setClaimNote(null)} style={{
+              background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 10,
+            }}>×</button>
+          </div>
+        )}
 
         {/* messages */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto pr-1" style={{ scrollbarWidth: "thin" }}>

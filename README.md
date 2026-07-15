@@ -29,6 +29,22 @@ same three in **Vercel → Project → Settings → Environment Variables**:
 | `BIAS_ENDPOINT` | `https://rhai-financial.duckdns.org/bias` — validated BiasChecker v1 on RHAI infra |
 | `BIAS_TOKEN` | on the droplet in `/opt/alice/app/.bias_env` — bearer token for `/score` |
 | `SEAL_SIGNING_KEY` | Ed25519 private key (pkcs8 der, base64) — signs each Merkle root so exported sessions are origin-attestable. Fail-open: unset → seals ship unsigned and say so. Public key published via `GET /api/chat` |
+| `STRIPE_SECRET_KEY` | dashboard.stripe.com — `sk_test_…` until the account is activated (UI labels TEST MODE) |
+| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | dashboard.stripe.com — `pk_test_…` counterpart |
+| `CREDITS_ENDPOINT` | `https://rhai-financial.duckdns.org/credits` — RHAI Credits Ledger on .16 |
+| `CREDITS_TOKEN` | on the droplet in `/opt/alice/app/.credits_env` — bearer token for wallet ops |
+
+**Prepaid credits (cost-plus made concrete):** Buy $5/$10/$25 via Stripe
+Checkout → the returned session id funds a wallet on the RHAI ledger
+(idempotent: one session, one wallet, token issued exactly once, stored only
+in the buyer's browser). Each paid answer debits its exact cost-plus total
+(micro-USD integers, rounded up — we never undercharge) and the receipt shows
+`CHARGED … — CREDITS` plus the live balance. Wallet credentials are verified
+against the ledger *before* the model call, so fake wallets can't bypass the
+free tier; ledger failures never bill the visitor (answer ships uncharged,
+honestly labeled). Every claim and debit is appended to a hash-chained audit
+log, publicly verifiable at `CREDITS_ENDPOINT/verify` (hashes only — no
+balances, no identities).
 
 **Memory architecture:** the context window is working memory; the visitor's
 sealed archive is long-term memory. Every exchange joins a browser-local
