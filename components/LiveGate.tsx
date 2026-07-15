@@ -31,6 +31,10 @@ interface BiasResult {
   validated: { toxicityAuroc5fold: number; framingAurocOfficialSplit: number };
   scope: string;
 }
+interface SealSig { alg: string; keyId: string; signature: string; }
+interface MemoryRecallInfo {
+  injected: number; verified: number; unsigned: number; rejected: number; roots: string[];
+}
 interface Exchange {
   id: number;
   query: string;
@@ -38,8 +42,9 @@ interface Exchange {
   modelId: string;
   receipt: Receipt;
   bias: BiasResult | null;
+  memoryRecall?: MemoryRecallInfo | null;
   stages: Stage[];
-  seal: { algo: string; leaves: Leaf[]; root: string; sealedAt: string };
+  seal: { algo: string; leaves: Leaf[]; root: string; sealedAt: string; sig?: SealSig };
   timingMs: { total: number; llm: number };
   chainHash: string; // client-side session chain: SHA-256(prev + root)
 }
@@ -66,6 +71,74 @@ function loadStoredSession(): StoredSession | null {
   } catch {
     return null;
   }
+}
+
+// ── Long-term memory: sealed exchanges across ALL sessions ──────────────
+// NEW SESSION clears the active thread but keeps memory; FORGET MEMORY
+// erases it — the user owns both. Capped FIFO for localStorage (v2 moves
+// to IndexedDB). Recall = keyword overlap scoring; the server verifies
+// each recalled memory's Ed25519 seal signature before injecting.
+
+const MEMORY_KEY = "vf_memory_v1";
+const MEMORY_CAP = 300;
+
+interface MemoryItem {
+  ts: string;
+  query: string;
+  response: string;
+  modelId: string;
+  sealedAt: string;
+  root: string;
+  leaves?: Leaf[]; // needed for server-side content verification of recalls
+  sig?: SealSig;
+}
+
+function loadMemory(): MemoryItem[] {
+  try {
+    const raw = localStorage.getItem(MEMORY_KEY);
+    if (!raw) return [];
+    const m = JSON.parse(raw);
+    return Array.isArray(m?.items) ? m.items : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveMemory(items: MemoryItem[]) {
+  try {
+    localStorage.setItem(MEMORY_KEY, JSON.stringify({ format: 1, items: items.slice(-MEMORY_CAP) }));
+  } catch { /* storage full — oldest-first cap should prevent this */ }
+}
+
+const RECALL_STOP = new Set([
+  "the", "and", "for", "are", "was", "you", "your", "with", "that", "this", "have",
+  "has", "had", "not", "but", "what", "when", "where", "which", "who", "how", "why",
+  "can", "could", "would", "should", "does", "did", "about", "than", "then", "them",
+  "they", "there", "their", "its", "were", "will", "one", "two", "more", "please",
+  "tell", "give", "make", "just", "like", "from", "into", "over", "also", "very",
+]);
+
+function recallTokens(s: string): Set<string> {
+  return new Set(
+    (s.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []).filter(w => !RECALL_STOP.has(w)),
+  );
+}
+
+function recallMemories(queryText: string, memory: MemoryItem[], excludeRoots: Set<string>, k = 3): MemoryItem[] {
+  const q = recallTokens(queryText);
+  if (!q.size) return [];
+  return memory
+    .filter(m => !excludeRoots.has(m.root))
+    .map(m => {
+      const t = recallTokens(m.query + " " + m.response);
+      let overlap = 0;
+      q.forEach(w => { if (t.has(w)) overlap += 1; });
+      return { m, overlap };
+    })
+    .filter(x => x.overlap >= 2)
+    .sort((a, b) => b.overlap - a.overlap)
+    .slice(0, k)
+    .map(x => x.m);
 }
 
 async function sha256Hex(s: string): Promise<string> {
@@ -158,7 +231,19 @@ function SealView({ ex }: { ex: Exchange }) {
         </div>
       ))}
       <div style={{ marginTop: 4, color: "#c8941a" }}>ROOT {ex.seal.root.slice(0, 32)}…</div>
+      <div style={{ color: ex.seal.sig ? "#2ecc71" : "rgba(255,255,255,0.3)" }}>
+        {ex.seal.sig
+          ? `SIGNED Ed25519 · key ${ex.seal.sig.keyId} · origin-attestable`
+          : "UNSIGNED — sealed before signing keys, or key not configured"}
+      </div>
       <div style={{ color: "rgba(255,255,255,0.3)" }}>CHAIN {ex.chainHash.slice(0, 32)}…</div>
+      {ex.memoryRecall && ex.memoryRecall.injected > 0 && (
+        <div style={{ color: "rgba(179,157,219,0.7)" }}>
+          MEMORY {ex.memoryRecall.injected} recalled · {ex.memoryRecall.verified} verified
+          {ex.memoryRecall.rejected ? ` · ${ex.memoryRecall.rejected} rejected` : ""}
+          {" — "}{ex.memoryRecall.roots.map(r => r.slice(0, 8)).join(", ")}
+        </div>
+      )}
       <div style={{ color: "rgba(255,255,255,0.2)", marginTop: 2 }}>
         sealed {ex.seal.sealedAt.slice(0, 19)}Z · verify with any SHA-256 tool
       </div>
@@ -178,12 +263,16 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
   const [sending, setSending]   = useState(false);
   const [error, setError]       = useState<string | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [memCount, setMemCount] = useState(0);
+  const [confirmForget, setConfirmForget] = useState(false);
+  const [sealKey, setSealKey] = useState<{ alg: string; keyId: string; publicKeySpkiB64: string; signedPayloadFormat: string } | null>(null);
   const chainRef   = useRef<string>("");
   const startedRef = useRef<string>("");
   const nextId     = useRef(1);
   const scrollRef  = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    setMemCount(loadMemory().length);
     const saved = loadStoredSession();
     if (saved && saved.exchanges.length) {
       startedRef.current = saved.startedAt;
@@ -201,6 +290,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         setModels(d.models);
         setModelId(d.models[0].id);
         setQuota(d.quota ?? null);
+        setSealKey(d.sealKey ?? null);
       })
       .catch(() => {
         setBootFailed(true);
@@ -245,14 +335,27 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
     setSending(true);
     setError(null);
     try {
-      const history = thread.flatMap(ex => ([
+      // Working memory: only the last 2 exchanges ride along as history.
+      // Older relevant context arrives via MEMORY RECALL instead — smaller
+      // prompts, smaller receipts, and the archive does the remembering.
+      const recent = thread.slice(-2);
+      const history = recent.flatMap(ex => ([
         { role: "user" as const, content: ex.query },
         { role: "assistant" as const, content: ex.response },
       ]));
+      const excludeRoots = new Set(recent.map(ex => ex.seal.root));
+      const recalled = recallMemories(q, loadMemory(), excludeRoots);
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ modelId, messages: [...history, { role: "user", content: q }] }),
+        body: JSON.stringify({
+          modelId,
+          messages: [...history, { role: "user", content: q }],
+          memories: recalled.map(m => ({
+            query: m.query, response: m.response, modelId: m.modelId,
+            sealedAt: m.sealedAt, root: m.root, leaves: m.leaves, sig: m.sig,
+          })),
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -269,11 +372,22 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         modelId: data.modelId,
         receipt: data.receipt,
         bias: data.bias ?? null,
+        memoryRecall: data.memoryRecall ?? null,
         stages: data.stages,
         seal: data.seal,
         timingMs: data.timingMs,
         chainHash,
       }]);
+      // Long-term memory: every sealed exchange joins the archive.
+      const mem = loadMemory();
+      mem.push({
+        ts: new Date().toISOString(),
+        query: q, response: data.text, modelId: data.modelId,
+        sealedAt: data.seal.sealedAt, root: data.seal.root,
+        leaves: data.seal.leaves, sig: data.seal.sig,
+      });
+      saveMemory(mem);
+      setMemCount(Math.min(mem.length, 300));
       setQuota(data.quota);
       setInput("");
     } catch {
@@ -300,12 +414,16 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         sessionChainHash: ex.chainHash,
       })),
       sessionChainRoot: chainRef.current,
+      sealPublicKey: sealKey,
       verify:
         "Leaves are SHA-256 hex digests produced server-side over the exchange " +
         "(see seal.leaves labels). The Merkle root pairs leaves left-to-right, " +
         "duplicating the last when odd, hashing hex-string concatenations. The session " +
         "chain is SHA-256(prevChainHash + seal.root), genesis = " +
-        "SHA-256('VERUM_FRONTIER_SESSION_GENESIS' + startedAt). Any SHA-256 tool can re-verify.",
+        "SHA-256('VERUM_FRONTIER_SESSION_GENESIS' + startedAt). Any SHA-256 tool can re-verify. " +
+        "Where seal.sig is present, it is an Ed25519 signature over " +
+        "'VF-SEAL-v1|<root>|<sealedAt>' by sealPublicKey — proving the exchange " +
+        "was sealed by rabbitholeai.ai and not altered since.",
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
@@ -328,7 +446,30 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
           <div style={{ fontSize: 8, letterSpacing: "0.25em", color: "#2ecc71", fontFamily: "monospace" }}>
             ● LIVE — REAL MODEL CALLS · REAL RECEIPTS · REAL SHA-256
           </div>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            {memCount > 0 && (
+              <button
+                onClick={() => {
+                  if (!confirmForget) {
+                    setConfirmForget(true);
+                    setTimeout(() => setConfirmForget(false), 3000);
+                    return;
+                  }
+                  try { localStorage.removeItem(MEMORY_KEY); } catch { /* ignore */ }
+                  setMemCount(0);
+                  setConfirmForget(false);
+                }}
+                title="Long-term memory lives only in this browser. Forgetting is permanent."
+                style={{
+                  fontSize: 8, fontFamily: "monospace", letterSpacing: "0.15em", cursor: "pointer",
+                  border: `1px solid ${confirmForget ? "rgba(231,76,60,0.6)" : "rgba(255,255,255,0.15)"}`,
+                  background: confirmForget ? "rgba(231,76,60,0.1)" : "transparent",
+                  color: confirmForget ? "#e74c3c" : "rgba(255,255,255,0.45)", padding: "3px 8px",
+                }}
+              >
+                {confirmForget ? "⚠ CLICK AGAIN TO FORGET ALL" : `🧠 ${memCount} SEALED ${memCount === 1 ? "MEMORY" : "MEMORIES"} · FORGET`}
+              </button>
+            )}
             {thread.length > 0 && (
               <button onClick={newSession} style={{
                 fontSize: 8, fontFamily: "monospace", letterSpacing: "0.15em", cursor: "pointer",
@@ -368,7 +509,9 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                 and a VALIDATED bias screen (toxicity AUROC 0.92 · framing 0.84, held-out) —<br />
                 a triage label on every answer, never a filter. Nothing is simulated in live mode.<br />
                 FREE TIER: {quota?.limit ?? 5} queries/day · answers capped at 1,024 tokens.<br />
-                YOUR SESSION: stored in your browser only — no accounts, no server database.
+                YOUR SESSION + MEMORY: stored in your browser only — no accounts, no server database.<br />
+                MEMORY RECALL: relevant past exchanges return as verified context — the context
+                window is working memory; your sealed archive is the long-term memory.
               </div>
             </div>
           )}

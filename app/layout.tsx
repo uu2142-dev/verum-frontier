@@ -2,7 +2,7 @@
 import "./globals.css";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://rabbitholeai.ai"),
+  metadataBase: new URL("https://www.rabbitholeai.ai"),
   title: "Verum Frontier // A.L.I.C.E. v1.2 — LIVE GATE",
   description:
     "RHAI / A.L.I.C.E. — Sovereign alignment and audit layer for frontier AI. " +
@@ -10,16 +10,16 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Verum Frontier // A.L.I.C.E. v1.2 — LIVE GATE",
     description: "Sovereign AI wrapper — bias checking, Merkle audit trail, model-agnostic.",
-    url: "https://rabbitholeai.ai",
+    url: "https://www.rabbitholeai.ai",
     siteName: "Rabbit Hole AI",
-    images: [{ url: "/og.png", width: 1200, height: 630 }],
+    images: [{ url: "/og.jpg", width: 1200, height: 630 }],
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
     title: "Verum Frontier // A.L.I.C.E. v1.2 — LIVE GATE",
     description: "Sovereign AI wrapper — bias checking, Merkle audit trail, model-agnostic.",
-    images: ["/og.png"],
+    images: ["/og.jpg"],
   },
 };
 

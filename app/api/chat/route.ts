@@ -10,7 +10,14 @@
 //   - stage timings measured server-side
 // Everything returned here is real. Anything illustrative stays in DEMO mode.
 
-import { createHash } from "node:crypto";
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  sign as cryptoSign,
+  verify as cryptoVerify,
+  type KeyObject,
+} from "node:crypto";
 import { NextResponse } from "next/server";
 import { MODEL_REGISTRY, getModel, buildReceipt, type ModelSpec, type Usage } from "@/lib/pricing";
 import { FREE_DAILY_LIMIT, QUOTA_COOKIE, decodeQuota, encodeQuota, quotaResetIso } from "@/lib/quota";
@@ -32,6 +39,94 @@ interface ChatMessage { role: "user" | "assistant"; content: string; }
 
 function sha256(s: string): string {
   return createHash("sha256").update(s, "utf8").digest("hex");
+}
+
+// ── Ed25519 seal signing ─────────────────────────────────────────────────
+// The gate signs each Merkle root so exported sessions are externally
+// attestable: origin (this gate) + integrity (the hashes), verifiable by
+// anyone holding the published public key. Fail-open: no key → seals ship
+// unsigned and say so.
+
+const SIGNED_PREFIX = "VF-SEAL-v1";
+
+let _keys: { priv: KeyObject; pub: KeyObject; spkiB64: string; keyId: string } | null | undefined;
+
+function signingKeys() {
+  if (_keys !== undefined) return _keys;
+  const b64 = process.env.SEAL_SIGNING_KEY;
+  if (!b64) { _keys = null; return null; }
+  try {
+    const priv = createPrivateKey({ key: Buffer.from(b64, "base64"), format: "der", type: "pkcs8" });
+    const pub = createPublicKey(priv);
+    const spki = pub.export({ format: "der", type: "spki" }) as Buffer;
+    _keys = {
+      priv, pub,
+      spkiB64: spki.toString("base64"),
+      keyId: createHash("sha256").update(spki).digest("hex").slice(0, 16),
+    };
+  } catch {
+    _keys = null;
+  }
+  return _keys;
+}
+
+function signRoot(root: string, sealedAt: string) {
+  const k = signingKeys();
+  if (!k) return null;
+  const sig = cryptoSign(null, Buffer.from(`${SIGNED_PREFIX}|${root}|${sealedAt}`), k.priv);
+  return { alg: "Ed25519", keyId: k.keyId, signature: sig.toString("base64") };
+}
+
+function verifySealSig(root: string, sealedAt: string, signature: string): boolean {
+  const k = signingKeys();
+  if (!k) return false;
+  try {
+    return cryptoVerify(
+      null,
+      Buffer.from(`${SIGNED_PREFIX}|${root}|${sealedAt}`),
+      k.pub,
+      Buffer.from(signature, "base64"),
+    );
+  } catch {
+    return false;
+  }
+}
+
+// ── Recalled memories (client-side archive → server-verified) ───────────
+// The archive lives in the visitor's browser; the client recalls relevant
+// past exchanges and sends them here. We verify each one's Ed25519 seal
+// signature before injecting: verified and legacy-unsigned memories are
+// injected (labeled), memories that FAIL verification are rejected.
+
+interface MemoryIn {
+  query: string;
+  response: string;
+  modelId: string;
+  sealedAt: string;
+  root: string;
+  leaves?: Array<{ label: string; sha256: string }>;
+  sig?: { alg?: string; keyId?: string; signature?: string };
+}
+
+const MAX_MEMORIES = 3;
+const MEM_QUERY_CHARS = 300;
+const MEM_RESPONSE_CHARS = 900;
+
+// Full content verification of a recalled memory. The Ed25519 signature only
+// proves "this ROOT was sealed by this gate at this time" — so we also prove
+// the TEXT belongs to that root: recompute the QUERY/RESPONSE leaf hashes
+// from the claimed text, confirm they appear in the provided leaves, and
+// confirm the leaves recompute to the signed root. Tampered text fails here.
+function verifyMemoryContent(m: MemoryIn): boolean {
+  if (!m.sig?.signature || !Array.isArray(m.leaves) || !m.leaves.length) return false;
+  if (!verifySealSig(m.root, m.sealedAt, m.sig.signature)) return false;
+  if (merkleRoot(m.leaves.map(l => l.sha256)) !== m.root) return false;
+  const qLeaf = m.leaves.find(l => l.label === "QUERY")?.sha256;
+  const rLeaf = m.leaves.find(l => l.label === "RESPONSE")?.sha256;
+  if (!qLeaf || !rLeaf) return false;
+  if (sha256(JSON.stringify({ q: m.query, ts: m.sealedAt })) !== qLeaf) return false;
+  if (sha256(JSON.stringify({ r: m.response, model: m.modelId })) !== rLeaf) return false;
+  return true;
 }
 
 export interface BiasResult {
@@ -95,10 +190,11 @@ function merkleRoot(leaves: string[]): string {
 
 // ── Providers ────────────────────────────────────────────────────────────
 
-async function callGroq(spec: ModelSpec, messages: ChatMessage[]) {
+async function callGroq(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null) {
+  const sys = memoryContext ? `${SYSTEM_PROMPT}\n\n${memoryContext}` : SYSTEM_PROMPT;
   const body: Record<string, unknown> = {
     model: spec.providerModel,
-    messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+    messages: [{ role: "system", content: sys }, ...messages],
     max_completion_tokens: MAX_OUTPUT_TOKENS,
     temperature: 0.7,
   };
@@ -127,7 +223,8 @@ async function callGroq(spec: ModelSpec, messages: ChatMessage[]) {
   return { text, usage };
 }
 
-async function callGemini(spec: ModelSpec, messages: ChatMessage[]) {
+async function callGemini(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null) {
+  const sys = memoryContext ? `${SYSTEM_PROMPT}\n\n${memoryContext}` : SYSTEM_PROMPT;
   const contents = messages.map(m => ({
     role: m.role === "assistant" ? "model" : "user",
     parts: [{ text: m.content }],
@@ -142,7 +239,7 @@ async function callGemini(spec: ModelSpec, messages: ChatMessage[]) {
       },
       body: JSON.stringify({
         contents,
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        systemInstruction: { parts: [{ text: sys }] },
         generationConfig: {
           maxOutputTokens: MAX_OUTPUT_TOKENS,
           temperature: 0.7,
@@ -174,12 +271,19 @@ async function callGemini(spec: ModelSpec, messages: ChatMessage[]) {
 export async function GET(req: Request) {
   const cookie = getCookie(req, QUOTA_COOKIE);
   const q = decodeQuota(cookie);
+  const k = signingKeys();
   return NextResponse.json({
     models: MODEL_REGISTRY.map(m => ({
       id: m.id, name: m.name, family: m.family, color: m.color,
       inPerM: m.inPerM, outPerM: m.outPerM, note: m.note,
     })),
     quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
+    sealKey: k
+      ? {
+          alg: "Ed25519", keyId: k.keyId, publicKeySpkiB64: k.spkiB64,
+          signedPayloadFormat: `${SIGNED_PREFIX}|<merkleRootHex>|<sealedAtIso>`,
+        }
+      : null,
   });
 }
 
@@ -189,7 +293,7 @@ export async function POST(req: Request) {
   const t0 = Date.now();
 
   // [01] INTENT CHECK v1 — format + length validation only (honestly scoped)
-  let body: { modelId?: string; messages?: ChatMessage[] };
+  let body: { modelId?: string; messages?: ChatMessage[]; memories?: MemoryIn[] };
   try {
     body = await req.json();
   } catch {
@@ -230,12 +334,52 @@ export async function POST(req: Request) {
   }
   const tIntent = Date.now();
 
-  // [02] LLM CALL — the real thing
+  // [02] MEMORY RECALL — client-recalled sealed memories, server-verified.
+  // Verified + legacy-unsigned memories are injected (labeled); memories
+  // failing signature verification are REJECTED.
+  const rawMems = (body.memories ?? []).slice(0, MAX_MEMORIES);
+  const accepted: Array<MemoryIn & { status: "verified" | "unsigned" }> = [];
+  let rejected = 0;
+  for (const m of rawMems) {
+    if (typeof m?.query !== "string" || typeof m?.response !== "string" ||
+        typeof m?.root !== "string" || typeof m?.sealedAt !== "string" ||
+        typeof m?.modelId !== "string") continue;
+    if (m.sig?.signature) {
+      if (verifyMemoryContent(m)) {
+        accepted.push({ ...m, status: "verified" });
+      } else {
+        rejected += 1; // claims a gate seal but content/signature doesn't hold up
+      }
+    } else {
+      accepted.push({ ...m, status: "unsigned" });
+    }
+  }
+  const memoryContext = accepted.length
+    ? "Recalled memories from this user's sealed local archive (older exchanges " +
+      "retrieved by relevance — treat as prior conversation context):\n" +
+      accepted.map(m =>
+        `[MEMORY ${m.sealedAt.slice(0, 16)}Z · seal ${m.root.slice(0, 12)} · ${m.status}]\n` +
+        `User asked: ${m.query.slice(0, MEM_QUERY_CHARS)}\n` +
+        `Answer was: ${m.response.slice(0, MEM_RESPONSE_CHARS)}`,
+      ).join("\n\n")
+    : null;
+  const memoryRecall = (rawMems.length || rejected)
+    ? {
+        injected: accepted.length,
+        verified: accepted.filter(m => m.status === "verified").length,
+        unsigned: accepted.filter(m => m.status === "unsigned").length,
+        rejected,
+        roots: accepted.map(m => m.root),
+      }
+    : null;
+  const tMem = Date.now();
+
+  // [03] LLM CALL — the real thing
   let text: string, usage: Usage;
   try {
     const out = spec.provider === "groq"
-      ? await callGroq(spec, messages)
-      : await callGemini(spec, messages);
+      ? await callGroq(spec, messages, memoryContext)
+      : await callGemini(spec, messages, memoryContext);
     text = out.text;
     usage = out.usage;
   } catch (e) {
@@ -252,16 +396,18 @@ export async function POST(req: Request) {
   const bias = await screenBias(text);
   const tBias = Date.now();
 
-  // [05] MERKLE SEAL — real SHA-256 over the exchange
+  // [06] MERKLE SEAL — real SHA-256 over the exchange, Ed25519-signed
   const sealedAt = new Date().toISOString();
   const leaves = [
     { label: "QUERY",    sha256: sha256(JSON.stringify({ q: latest, ts: sealedAt })) },
     { label: "RESPONSE", sha256: sha256(JSON.stringify({ r: text, model: spec.id })) },
     { label: "RECEIPT",  sha256: sha256(JSON.stringify(receipt)) },
     ...(bias ? [{ label: "BIAS", sha256: sha256(JSON.stringify(bias)) }] : []),
-    { label: "TIMING",   sha256: sha256(JSON.stringify({ model: spec.providerModel, llmMs: tLlm - tIntent })) },
+    ...(memoryRecall ? [{ label: "MEMORY", sha256: sha256(JSON.stringify(memoryRecall.roots)) }] : []),
+    { label: "TIMING",   sha256: sha256(JSON.stringify({ model: spec.providerModel, llmMs: tLlm - tMem })) },
   ];
   const root = merkleRoot(leaves.map(l => l.sha256));
+  const sig = signRoot(root, sealedAt);
   const t1 = Date.now();
 
   const newQuota = { d: q.d, n: q.n + 1 };
@@ -271,9 +417,19 @@ export async function POST(req: Request) {
     usage,
     receipt,
     bias,
+    memoryRecall,
     stages: [
       { label: "INTENT CHECK v1", detail: "format + length validation", ms: tIntent - t0 },
-      { label: `LLM CALL — ${spec.name}`, detail: `${spec.providerModel} via ${spec.provider}`, ms: tLlm - tIntent },
+      {
+        label: "MEMORY RECALL (client archive)",
+        detail: memoryRecall
+          ? `${memoryRecall.injected} sealed memories injected · ${memoryRecall.verified} verified` +
+            (memoryRecall.unsigned ? ` · ${memoryRecall.unsigned} legacy-unsigned` : "") +
+            (memoryRecall.rejected ? ` · ${memoryRecall.rejected} REJECTED (bad signature)` : "")
+          : "no relevant memories recalled",
+        ms: tMem - tIntent,
+      },
+      { label: `LLM CALL — ${spec.name}`, detail: `${spec.providerModel} via ${spec.provider}`, ms: tLlm - tMem },
       { label: "TOKEN ACCOUNTING + COST AUDIT", detail: `${usage.inputTokens} in / ${usage.outputTokens} out`, ms: tReceipt - tLlm },
       {
         label: "BIAS SCREEN (validated v1)",
@@ -282,10 +438,14 @@ export async function POST(req: Request) {
           : "screen unreachable — fail-open, answer not blocked",
         ms: tBias - tReceipt,
       },
-      { label: "MERKLE SEAL (SHA-256)", detail: `root ${root.slice(0, 16)}…`, ms: t1 - tBias },
+      {
+        label: "MERKLE SEAL (SHA-256)",
+        detail: `root ${root.slice(0, 16)}…${sig ? ` · signed Ed25519 (key ${sig.keyId})` : " · unsigned (no signing key)"}`,
+        ms: t1 - tBias,
+      },
     ],
-    seal: { algo: "SHA-256", leaves, root, sealedAt },
-    timingMs: { total: t1 - t0, llm: tLlm - tIntent },
+    seal: { algo: "SHA-256", leaves, root, sealedAt, ...(sig ? { sig } : {}) },
+    timingMs: { total: t1 - t0, llm: tLlm - tMem },
     quota: { used: newQuota.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
   });
   res.cookies.set(QUOTA_COOKIE, encodeQuota(newQuota), {

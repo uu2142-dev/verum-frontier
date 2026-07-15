@@ -28,6 +28,17 @@ same three in **Vercel → Project → Settings → Environment Variables**:
 | `QUOTA_SECRET` | any long random string — signs the free-tier quota cookie |
 | `BIAS_ENDPOINT` | `https://rhai-financial.duckdns.org/bias` — validated BiasChecker v1 on RHAI infra |
 | `BIAS_TOKEN` | on the droplet in `/opt/alice/app/.bias_env` — bearer token for `/score` |
+| `SEAL_SIGNING_KEY` | Ed25519 private key (pkcs8 der, base64) — signs each Merkle root so exported sessions are origin-attestable. Fail-open: unset → seals ship unsigned and say so. Public key published via `GET /api/chat` |
+
+**Memory architecture:** the context window is working memory; the visitor's
+sealed archive is long-term memory. Every exchange joins a browser-local
+memory store (`vf_memory_v1`, capped 300, user-erasable). On each query the
+client recalls up to 3 relevant older exchanges by keyword overlap and sends
+them with the request; the server verifies each one's Ed25519 seal signature
+(verified/legacy-unsigned injected and labeled, failed signatures REJECTED),
+injects them as cited context, and seals the recall as a MEMORY Merkle leaf.
+Only the last 2 exchanges ride along as raw history — receipts shrink because
+the archive does the remembering.
 
 Without the first three, live queries return errors. Without the bias pair the
 gate still works — the bias screen fails open and answers are labeled unscreened.
