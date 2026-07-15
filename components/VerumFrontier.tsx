@@ -325,23 +325,31 @@ export default function VerumFrontier() {
     <main className="min-h-screen bg-black text-zinc-300 font-mono relative overflow-hidden" style={{ height: "100dvh" }}>
 
       {/* ── BACKGROUND ────────────────────────────────────────────────── */}
-      {/* LIVE mode: near-solid black for readability — art only a faint
-          ghost on desktop, hidden entirely on mobile. DEMO keeps the full
-          cinematic treatment (the experience is built around the image). */}
+      {/* LIVE mode: solid black with a faint RHAI rabbit watermark (desktop
+          only — mobile gets pure black for maximum readability). DEMO keeps
+          the full cinematic art (that experience is built around the image). */}
       <div className="absolute inset-0 z-0 bg-black">
-        <Image
-          src="/rabbitholeai-verum_frontier.png"
-          alt="Verum Frontier"
-          fill
-          className={mode === "live"
-            ? "object-cover opacity-[0.13] max-md:hidden"
-            : "object-cover opacity-60 mix-blend-screen"}
-          priority
-          unoptimized
-        />
-        <div className={mode === "live"
-          ? "absolute inset-0 bg-gradient-to-b from-black/70 via-black/40 to-black/90"
-          : "absolute inset-0 bg-gradient-to-b from-black/60 via-transparent to-black/90"} />
+        {mode === "live" ? (
+          <div className="absolute inset-0 max-md:hidden" style={{
+            backgroundImage: "url(/rhai-logo.png)",
+            backgroundRepeat: "no-repeat",
+            backgroundPosition: "center 40%",
+            backgroundSize: "min(46vh, 40vw)",
+            opacity: 0.08,
+          }} />
+        ) : (
+          <>
+            <Image
+              src="/rabbitholeai-verum_frontier.png"
+              alt="Verum Frontier"
+              fill
+              className="object-cover opacity-60 mix-blend-screen"
+              priority
+              unoptimized
+            />
+            <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-transparent to-black/90" />
+          </>
+        )}
       </div>
 
       {/* ── SCANLINES ─────────────────────────────────────────────────── */}
@@ -352,6 +360,8 @@ export default function VerumFrontier() {
       {/* ── TOP HEADER ────────────────────────────────────────────────── */}
       <header className="relative z-50 flex justify-between items-center p-4 md:p-6 border-b border-white/5 bg-black/40 backdrop-blur-md">
         <div className="flex items-center gap-3 md:gap-4">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/rhai-logo.png" alt="Rabbit Hole AI" className="w-6 h-6 md:w-7 md:h-7 rounded-sm flex-shrink-0" />
           <div className={`w-2 h-2 rounded-full flex-shrink-0 ${running ? "bg-amber-500 animate-pulse" : "bg-green-500"}`}
                style={{ boxShadow: running ? "0 0 8px #f59e0b" : "0 0 8px #22c55e" }} />
           <h1 className="text-[9px] md:text-[10px] tracking-[0.3em] md:tracking-[0.4em] uppercase font-bold text-white whitespace-nowrap">

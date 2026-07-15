@@ -3,6 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://www.rabbitholeai.ai"),
+  icons: { icon: "/rhai-logo.png", apple: "/rhai-logo.png" },
   title: "Verum Frontier // A.L.I.C.E. v1.2 — LIVE GATE",
   description:
     "RHAI / A.L.I.C.E. — Sovereign alignment and audit layer for frontier AI. " +
