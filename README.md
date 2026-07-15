@@ -23,7 +23,7 @@ same three in **Vercel → Project → Settings → Environment Variables**:
 
 | Variable | Source |
 |---|---|
-| `GROQ_API_KEY` | console.groq.com (serves Llama 3.3 70B, GPT-OSS 120B, Qwen3 32B) |
+| `GROQ_API_KEY` | console.groq.com (serves Llama 3.3 70B, GPT-OSS 120B, Qwen 3.6 27B) |
 | `GEMINI_API_KEY` | aistudio.google.com (serves Gemini 2.5 Flash) |
 | `QUOTA_SECRET` | any long random string — signs the free-tier quota cookie |
 | `BIAS_ENDPOINT` | `https://rhai-financial.duckdns.org/bias` — validated BiasChecker v1 on RHAI infra |

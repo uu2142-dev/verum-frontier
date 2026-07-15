@@ -6,11 +6,14 @@
 //   + Project Support 15%  (server 30% / development 40% / steward 20% / reserve 10%)
 //   = YOUR COST
 //
-// Provider rates pinned 2026-07-12 (on-demand, per 1M tokens):
-//   groq.com/pricing, ai.google.dev/gemini-api/docs/pricing
+// Provider rates pinned 2026-07-14 (on-demand, per 1M tokens), read directly
+// from the PRIMARY sources: groq.com/pricing, ai.google.dev/gemini-api/docs/pricing.
+// (2026-07-14 correction: Llama 3.3 70B is $0.59/$0.79 on Groq's own page —
+// the $0.30/$0.40 pinned on 07-12 came from stale secondary sources and
+// understated receipts. Always re-verify against the provider's page.)
 // Update PRICE_SHEET_DATE whenever rates are re-verified.
 
-export const PRICE_SHEET_DATE = "2026-07-12";
+export const PRICE_SHEET_DATE = "2026-07-14";
 
 export type Provider = "groq" | "google";
 
@@ -34,8 +37,8 @@ export const MODEL_REGISTRY: readonly ModelSpec[] = [
     name: "Llama 3.3 70B",
     family: "Meta",
     color: "#c8a96e",
-    inPerM: 0.30,
-    outPerM: 0.40,
+    inPerM: 0.59,
+    outPerM: 0.79,
     note: "Open weights · served by Groq LPU",
   },
   {
@@ -50,14 +53,16 @@ export const MODEL_REGISTRY: readonly ModelSpec[] = [
     note: "OpenAI open-weight model · served by Groq LPU",
   },
   {
-    id: "qwen3-32b",
-    providerModel: "qwen/qwen3-32b",
+    // qwen3-32b decommissioned by Groq 2026-07-17 (deprecation email 07-14);
+    // swapped to its successor to keep the Alibaba family in the council.
+    id: "qwen3.6-27b",
+    providerModel: "qwen/qwen3.6-27b",
     provider: "groq",
-    name: "Qwen3 32B",
+    name: "Qwen 3.6 27B",
     family: "Alibaba",
     color: "#b39ddb",
-    inPerM: 0.29,
-    outPerM: 0.59,
+    inPerM: 0.60,
+    outPerM: 3.00,
     note: "Open weights · served by Groq LPU",
   },
   {
