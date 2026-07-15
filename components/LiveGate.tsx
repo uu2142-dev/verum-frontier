@@ -709,7 +709,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                       }}
                     >
                       🧾 {ex.receipt.usage.inputTokens.toLocaleString()} in / {ex.receipt.usage.outputTokens.toLocaleString()} out
-                      · cost {fmtUsd(ex.receipt.totalUsd)} · charged $0.00
+                      · cost {fmtUsd(ex.receipt.totalUsd)} · charged {fmtUsd(ex.receipt.chargedUsd)}
                       · {ex.bias ? `bias tox p${ex.bias.toxicityPctile} / frame p${ex.bias.framingPctile}` : "bias n/a"}{" · seal "}
                       {ex.seal.root.slice(0, 10)}… {open ? "▲" : "▼"}
                     </button>
