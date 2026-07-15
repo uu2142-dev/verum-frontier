@@ -325,16 +325,23 @@ export default function VerumFrontier() {
     <main className="min-h-screen bg-black text-zinc-300 font-mono relative overflow-hidden" style={{ height: "100dvh" }}>
 
       {/* ── BACKGROUND ────────────────────────────────────────────────── */}
-      <div className="absolute inset-0 z-0">
+      {/* LIVE mode: near-solid black for readability — art only a faint
+          ghost on desktop, hidden entirely on mobile. DEMO keeps the full
+          cinematic treatment (the experience is built around the image). */}
+      <div className="absolute inset-0 z-0 bg-black">
         <Image
           src="/rabbitholeai-verum_frontier.png"
           alt="Verum Frontier"
           fill
-          className="object-cover opacity-60 mix-blend-screen"
+          className={mode === "live"
+            ? "object-cover opacity-[0.13] max-md:hidden"
+            : "object-cover opacity-60 mix-blend-screen"}
           priority
           unoptimized
         />
-        <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-transparent to-black/90" />
+        <div className={mode === "live"
+          ? "absolute inset-0 bg-gradient-to-b from-black/70 via-black/40 to-black/90"
+          : "absolute inset-0 bg-gradient-to-b from-black/60 via-transparent to-black/90"} />
       </div>
 
       {/* ── SCANLINES ─────────────────────────────────────────────────── */}

@@ -419,6 +419,15 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
 
   const model = models.find(m => m.id === modelId);
   const remaining = quota ? Math.max(0, quota.limit - quota.used) : null;
+  // Credits bypass the free tier entirely — a funded wallet keeps the gate
+  // open when the daily free quota is spent. (Free resets 00:00 UTC.)
+  const creditsActive = !!(wallet && wallet.balanceUsd > 0.0001);
+  const gateOpen = remaining !== 0 || creditsActive;
+
+  // Conversion moment: the instant free runs out, show the buy row.
+  useEffect(() => {
+    if (remaining === 0 && !creditsActive && payments.enabled) setBuyOpen(true);
+  }, [remaining, creditsActive, payments.enabled]);
 
   const send = useCallback(async () => {
     const q = input.trim();
@@ -596,10 +605,12 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
             {quota && (
               <div style={{
                 fontSize: 8, fontFamily: "monospace", letterSpacing: "0.15em",
-                color: remaining === 0 ? "#e74c3c" : "rgba(255,255,255,0.5)",
+                color: remaining === 0 && !creditsActive ? "#e74c3c" : "rgba(255,255,255,0.5)",
                 border: "1px solid rgba(255,255,255,0.12)", padding: "3px 8px",
               }}>
-                FREE TIER · {remaining}/{quota.limit} QUERIES LEFT TODAY
+                {remaining === 0 && creditsActive
+                  ? "FREE TIER SPENT · RUNNING ON CREDITS"
+                  : `FREE TIER · ${remaining}/${quota.limit} QUERIES LEFT TODAY`}
               </div>
             )}
           </div>
@@ -653,8 +664,10 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         <div ref={scrollRef} className="flex-1 overflow-y-auto pr-1" style={{ scrollbarWidth: "thin" }}>
           {thread.length === 0 && !sending && (
             <div style={{
-              fontFamily: "monospace", color: "rgba(255,255,255,0.4)", fontSize: 11,
-              lineHeight: 2, marginTop: "8vh", maxWidth: 560,
+              fontFamily: "monospace", color: "rgba(255,255,255,0.55)", fontSize: 11,
+              lineHeight: 2, marginTop: "6vh", maxWidth: 580,
+              background: "rgba(4,3,10,0.82)", border: "1px solid rgba(255,255,255,0.07)",
+              padding: "16px 18px", backdropFilter: "blur(6px)",
             }}>
               <div style={{ color: "#c8941a", letterSpacing: "0.25em", fontSize: 9, marginBottom: 10 }}>
                 THE GATE IS LIVE
@@ -683,15 +696,15 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                 <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
                   <div style={{
                     maxWidth: "85%", padding: "8px 12px", fontSize: 12, lineHeight: 1.6,
-                    border: "1px solid rgba(200,148,26,0.35)", background: "rgba(200,148,26,0.06)",
-                    color: "rgba(255,255,255,0.85)", whiteSpace: "pre-wrap",
+                    border: "1px solid rgba(200,148,26,0.4)", background: "rgba(26,19,5,0.92)",
+                    color: "rgba(255,255,255,0.9)", whiteSpace: "pre-wrap",
                   }}>{ex.query}</div>
                 </div>
                 {/* model */}
                 <div style={{ display: "flex", justifyContent: "flex-start" }}>
                   <div style={{
                     maxWidth: "85%", padding: "8px 12px",
-                    border: `1px solid ${m?.color ?? "#888"}44`, background: "rgba(4,3,10,0.85)",
+                    border: `1px solid ${m?.color ?? "#888"}44`, background: "rgba(5,4,11,0.94)",
                   }}>
                     <div style={{ fontSize: 7, letterSpacing: "0.2em", color: m?.color, marginBottom: 4 }}>
                       {m?.name.toUpperCase()} · {m?.family.toUpperCase()} · {ex.timingMs.llm}ms
@@ -773,8 +786,14 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder={remaining === 0 ? "Free tier used for today — resets 00:00 UTC. Paid credits (cost-plus) coming." : "Ask through the gate… (Enter to send)"}
-            disabled={sending || remaining === 0}
+            placeholder={
+              !gateOpen
+                ? "Free tier used for today (resets 00:00 UTC) — buy prepaid credits above to keep going, cost-plus receipts included."
+                : creditsActive && remaining === 0
+                  ? "Ask through the gate… (paying from credits — exact cost-plus per answer)"
+                  : "Ask through the gate… (Enter to send)"
+            }
+            disabled={sending || !gateOpen}
             rows={2}
             maxLength={4000}
             style={{
@@ -785,12 +804,12 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
           />
           <button
             onClick={send}
-            disabled={sending || !input.trim() || remaining === 0}
+            disabled={sending || !input.trim() || !gateOpen}
             style={{
               fontFamily: "monospace", fontSize: 9, letterSpacing: "0.2em", cursor: "pointer",
               padding: "0 18px", border: "1px solid rgba(200,148,26,0.5)",
               background: sending ? "rgba(200,148,26,0.05)" : "rgba(200,148,26,0.12)",
-              color: "#c8941a", opacity: (sending || !input.trim() || remaining === 0) ? 0.4 : 1,
+              color: "#c8941a", opacity: (sending || !input.trim() || !gateOpen) ? 0.4 : 1,
             }}
           >{sending ? "…" : "SEND"}</button>
         </div>
