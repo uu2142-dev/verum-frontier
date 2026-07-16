@@ -36,9 +36,29 @@ export default function Terms() {
         <h2 style={S.h2}>Free tier</h2>
         <p style={S.p}>
           You get 5 live queries per day at no charge, with answers capped at 1,024
-          tokens. Limits may change. There is currently nothing to buy on this site;
-          when paid credits launch they will come with their own pricing, refund, and
-          billing terms shown before any payment.
+          tokens. Limits may change.
+        </p>
+
+        <h2 style={S.h2}>Prepaid credits</h2>
+        <p style={S.p}>
+          Credit packs ($5 / $10 / $25) are sold through Stripe&apos;s hosted checkout —
+          we never see your card details. Each answer debits its exact cost-plus
+          total from your balance, shown on the receipt before and after. Credits
+          never expire. While our payment account completes activation, purchases
+          run in clearly labeled TEST MODE and no real money moves.
+        </p>
+        <p style={S.p}>
+          Your wallet credentials live only in your browser — we hold balances
+          against an anonymous wallet id, with no account and no identity attached.
+          If you lose the device or clear browser storage, email support with your
+          Stripe receipt and we will restore your unused balance to a new wallet.
+        </p>
+
+        <h2 style={S.h2}>Refunds</h2>
+        <p style={S.p}>
+          Your unused credit balance is refundable on request, no questions asked.
+          Email <a href="mailto:jtdawson015@gmail.com" style={{ color: "#c8941a" }}>jtdawson015@gmail.com</a> with
+          your Stripe receipt and we&apos;ll process it promptly.
         </p>
 
         <h2 style={S.h2}>Third-party models</h2>
@@ -65,8 +85,9 @@ export default function Terms() {
 
         <h2 style={S.h2}>Contact</h2>
         <p style={S.p}>
-          Rabbit Hole AI — Jeremiah Dawson, via LinkedIn. See also the{" "}
-          <Link href="/privacy" style={{ color: "#c8941a" }}>Privacy Note</Link>.
+          Rabbit Hole AI — Jeremiah Dawson ·{" "}
+          <a href="mailto:jtdawson015@gmail.com" style={{ color: "#c8941a" }}>jtdawson015@gmail.com</a>.
+          See also the <Link href="/privacy" style={{ color: "#c8941a" }}>Privacy Note</Link>.
         </p>
       </div>
     </main>

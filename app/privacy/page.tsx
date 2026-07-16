@@ -48,6 +48,15 @@ export default function Privacy() {
           cookie we set.
         </p>
 
+        <h2 style={S.h2}>Payments</h2>
+        <p style={S.p}>
+          Credit purchases are processed by Stripe on their own pages — we never see
+          your card number. Stripe handles your payment details under its own privacy
+          policy. On our side, the credits ledger stores an anonymous wallet id, a
+          balance, and a hash-chained audit log of amounts — no names, no emails, no
+          card data. Your wallet token exists only in your browser.
+        </p>
+
         <h2 style={S.h2}>Hosting logs</h2>
         <p style={S.p}>
           The site runs on Vercel, whose infrastructure keeps standard operational logs
@@ -64,8 +73,9 @@ export default function Privacy() {
 
         <h2 style={S.h2}>Contact</h2>
         <p style={S.p}>
-          Rabbit Hole AI — Jeremiah Dawson, via LinkedIn. See also the{" "}
-          <Link href="/terms" style={{ color: "#c8941a" }}>Terms of Use</Link>.
+          Rabbit Hole AI — Jeremiah Dawson ·{" "}
+          <a href="mailto:jtdawson015@gmail.com" style={{ color: "#c8941a" }}>jtdawson015@gmail.com</a>.
+          See also the <Link href="/terms" style={{ color: "#c8941a" }}>Terms of Use</Link>.
         </p>
       </div>
     </main>
