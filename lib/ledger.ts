@@ -28,9 +28,19 @@ async function ledgerFetch<T>(path: string, body: unknown): Promise<LedgerResult
   }
 }
 
-export function claimWallet(checkoutSessionId: string, amountUsd: number) {
-  return ledgerFetch<{ wallet_id: string; wallet_token?: string; balance_usd: number; already_claimed: boolean }>(
-    "/wallet/claim", { checkout_session_id: checkoutSessionId, amount_usd: amountUsd });
+export function claimWallet(
+  checkoutSessionId: string,
+  amountUsd: number,
+  target?: { id: string; token: string },
+) {
+  return ledgerFetch<{ wallet_id: string; wallet_token?: string; balance_usd: number; already_claimed: boolean; merged: boolean }>(
+    "/wallet/claim", {
+      checkout_session_id: checkoutSessionId,
+      amount_usd: amountUsd,
+      // Same-mode top-ups MERGE into the buyer's existing wallet; the ledger
+      // refuses cross-mode merges (test credits never bleed into live).
+      ...(target ? { target_wallet_id: target.id, target_wallet_token: target.token } : {}),
+    });
 }
 
 export function debitWallet(walletId: string, walletToken: string, amountUsd: number, memo: string) {

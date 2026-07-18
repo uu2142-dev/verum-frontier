@@ -14,7 +14,7 @@ export async function POST(req: Request) {
   if (!stripeConfigured()) {
     return NextResponse.json({ error: "Payments are not configured yet." }, { status: 503 });
   }
-  let body: { sessionId?: string };
+  let body: { sessionId?: string; wallet?: { id?: string; token?: string } };
   try {
     body = await req.json();
   } catch {
@@ -38,15 +38,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unexpected session amount." }, { status: 400 });
   }
   const amountUsd = session.amount_total / 100;
-  const r = await claimWallet(sessionId, amountUsd);
+  const target = (body.wallet?.id && body.wallet?.token)
+    ? { id: String(body.wallet.id), token: String(body.wallet.token) }
+    : undefined;
+  const r = await claimWallet(sessionId, amountUsd, target);
   if (!r.ok || !r.data) {
     return NextResponse.json({ error: r.error ?? "Ledger unavailable — your payment is safe; retry claiming shortly." }, { status: 503 });
   }
   return NextResponse.json({
     walletId: r.data.wallet_id,
-    walletToken: r.data.wallet_token ?? null, // null on re-claims — token is issued exactly once
+    walletToken: r.data.wallet_token ?? null, // null on top-ups and re-claims — token is issued exactly once
     balanceUsd: r.data.balance_usd,
     alreadyClaimed: r.data.already_claimed,
+    merged: r.data.merged ?? false,
     testMode: stripeTestMode(),
   });
 }

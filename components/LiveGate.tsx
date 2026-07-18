@@ -356,29 +356,38 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
     const cs = params.get("credit_session");
     if (cs) {
       window.history.replaceState(null, "", window.location.pathname);
+      const existingWallet = loadWallet();
       fetch("/api/credits/claim", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: cs }),
+        // Send existing wallet credentials so a same-mode purchase TOPS UP
+        // instead of replacing (the ledger refuses cross-mode merges).
+        body: JSON.stringify({
+          sessionId: cs,
+          ...(existingWallet ? { wallet: { id: existingWallet.id, token: existingWallet.token } } : {}),
+        }),
       })
         .then(r => r.json().then(d => ({ ok: r.ok, d })))
         .then(({ ok, d }) => {
           if (!ok) { setClaimNote(`⚠ ${d.error ?? "Claim failed."}`); return; }
-          if (d.walletToken) {
+          const current = loadWallet();
+          if (d.merged && current && current.id === d.walletId) {
+            const w = { ...current, balanceUsd: d.balanceUsd };
+            saveWallet(w);
+            setWallet(w);
+            setClaimNote(`✓ Topped up — balance $${d.balanceUsd.toFixed(2)}${d.testMode ? " (TEST MODE)" : ""}`);
+          } else if (d.walletToken) {
             const w = { id: d.walletId, token: d.walletToken, balanceUsd: d.balanceUsd };
             saveWallet(w);
             setWallet(w);
             setClaimNote(`✓ Credits claimed: $${d.balanceUsd.toFixed(2)}${d.testMode ? " (TEST MODE — no real charge)" : ""}`);
+          } else if (current && current.id === d.walletId) {
+            const w = { ...current, balanceUsd: d.balanceUsd };
+            saveWallet(w);
+            setWallet(w);
+            setClaimNote(`✓ Wallet refreshed: $${d.balanceUsd.toFixed(2)}`);
           } else {
-            const existing = loadWallet();
-            if (existing && existing.id === d.walletId) {
-              const w = { ...existing, balanceUsd: d.balanceUsd };
-              saveWallet(w);
-              setWallet(w);
-              setClaimNote(`✓ Wallet refreshed: $${d.balanceUsd.toFixed(2)}`);
-            } else {
-              setClaimNote("⚠ This checkout was already claimed in another browser — credits live where they were first claimed.");
-            }
+            setClaimNote("⚠ This checkout was already claimed in another browser — credits live where they were first claimed.");
           }
         })
         .catch(() => setClaimNote("⚠ Claim failed — your payment is safe; reload to retry."));
