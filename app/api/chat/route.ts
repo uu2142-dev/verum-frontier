@@ -31,6 +31,7 @@ const MAX_INPUT_CHARS = 4000;
 const MAX_HISTORY_CHARS = 12000;
 const MAX_HISTORY_MESSAGES = 20;
 const MAX_OUTPUT_TOKENS = 1024;
+const MAX_ATTACH_CHARS = 24_000; // attached text rides ONE turn; its cost shows on the receipt
 
 const SYSTEM_PROMPT =
   "You are answering through the Verum Frontier gate (Rabbit Hole AI). " +
@@ -301,6 +302,10 @@ export async function POST(req: Request) {
     messages?: ChatMessage[];
     memories?: MemoryIn[];
     wallet?: { id?: string; token?: string };
+    // ALICE routing happens CLIENT-SIDE (sovereign — the user's browser picks
+    // the model and can show the rule); we echo it as a labeled stage.
+    routing?: { mode?: string; rule?: string };
+    attachment?: { name?: string; text?: string };
   };
   try {
     body = await req.json();
@@ -328,6 +333,26 @@ export async function POST(req: Request) {
   if (totalChars > MAX_HISTORY_CHARS) {
     return NextResponse.json({ error: "Conversation too long — start a new session." }, { status: 400 });
   }
+
+  // Attached text/document: rides this ONE turn only (the archive remembers
+  // by hash, not by resending). Sealed as its own DOCUMENT Merkle leaf.
+  let attachment: { name: string; text: string } | null = null;
+  if (body.attachment?.text && typeof body.attachment.text === "string") {
+    const name = String(body.attachment.name ?? "attached.txt").slice(0, 100);
+    const docText = body.attachment.text.slice(0, MAX_ATTACH_CHARS);
+    if (docText.trim()) attachment = { name, text: docText };
+  }
+  const providerLatest = attachment
+    ? `${latest}\n\n[ATTACHED DOCUMENT: ${attachment.name}]\n${attachment.text}`
+    : latest;
+  const providerMessages: ChatMessage[] = attachment
+    ? [...messages.slice(0, -1), { role: "user", content: providerLatest }]
+    : messages;
+
+  // Client-side ALICE routing echo (labeled as client-asserted, because it is)
+  const routing = (body.routing?.mode === "save" || body.routing?.mode === "best")
+    ? { mode: body.routing.mode, rule: String(body.routing.rule ?? "").slice(0, 140) }
+    : null;
 
   // Free-tier quota
   // Paid path: wallet credentials are verified against the ledger BEFORE the
@@ -400,8 +425,8 @@ export async function POST(req: Request) {
   let text: string, usage: Usage;
   try {
     const out = spec.provider === "groq"
-      ? await callGroq(spec, messages, memoryContext)
-      : await callGemini(spec, messages, memoryContext);
+      ? await callGroq(spec, providerMessages, memoryContext)
+      : await callGemini(spec, providerMessages, memoryContext);
     text = out.text;
     usage = out.usage;
   } catch (e) {
@@ -447,6 +472,7 @@ export async function POST(req: Request) {
   const sealedAt = new Date().toISOString();
   const leaves = [
     { label: "QUERY",    sha256: sha256(JSON.stringify({ q: latest, ts: sealedAt })) },
+    ...(attachment ? [{ label: "DOCUMENT", sha256: sha256(JSON.stringify({ name: attachment.name, doc: attachment.text })) }] : []),
     { label: "RESPONSE", sha256: sha256(JSON.stringify({ r: text, model: spec.id })) },
     { label: "RECEIPT",  sha256: sha256(JSON.stringify(receipt)) },
     ...(bias ? [{ label: "BIAS", sha256: sha256(JSON.stringify(bias)) }] : []),
@@ -467,8 +493,20 @@ export async function POST(req: Request) {
     bias,
     memoryRecall,
     wallet: walletOut,
+    attachmentMeta: attachment ? { name: attachment.name, chars: attachment.text.length } : null,
+    routing,
     stages: [
       { label: "INTENT CHECK v1", detail: "format + length validation", ms: tIntent - t0 },
+      ...(routing ? [{
+        label: "ALICE ROUTING (client-side)",
+        detail: `${routing.mode.toUpperCase()} → ${spec.name} · ${routing.rule} — decided in your browser, sovereign`,
+        ms: 0,
+      }] : []),
+      ...(attachment ? [{
+        label: "DOCUMENT ATTACHED",
+        detail: `${attachment.name} · ${attachment.text.length.toLocaleString()} chars — rides this turn only, sealed by hash`,
+        ms: 0,
+      }] : []),
       {
         label: "MEMORY RECALL (client archive)",
         detail: memoryRecall

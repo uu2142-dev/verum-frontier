@@ -43,10 +43,45 @@ interface Exchange {
   receipt: Receipt;
   bias: BiasResult | null;
   memoryRecall?: MemoryRecallInfo | null;
+  routing?: { mode: string; rule: string } | null;
+  attachmentMeta?: { name: string; chars: number } | null;
   stages: Stage[];
   seal: { algo: string; leaves: Leaf[]; root: string; sealedAt: string; sig?: SealSig };
   timingMs: { total: number; llm: number };
   chainHash: string; // client-side session chain: SHA-256(prev + root)
+}
+
+// ── ALICE routing — sovereign by construction ────────────────────────────
+// The routing decision runs HERE, in the user's browser, with rules you can
+// read. The server only echoes the choice as a labeled stage. The local
+// decision history (which rules fired, what you kept, what you re-asked) is
+// the seed data for the personal Eye/Soul — and it never leaves this device.
+
+type RouterMode = "save" | "best" | null;
+
+function routeQuery(q: string, mode: "save" | "best", models: ModelInfo[]): { modelId: string; rule: string } {
+  const fallback = { modelId: models[0]?.id ?? "", rule: "default (first available model)" };
+  if (!models.length) return fallback;
+  if (mode === "save") {
+    const cheapest = [...models].sort((a, b) => (a.inPerM + a.outPerM) - (b.inPerM + b.outPerM))[0];
+    return { modelId: cheapest.id, rule: `cheapest blended rate ($${cheapest.inPerM}/$${cheapest.outPerM} per M)` };
+  }
+  const pick = (id: string, rule: string) =>
+    models.some(m => m.id === id) ? { modelId: id, rule } : fallback;
+  const ql = q.toLowerCase();
+  if (/\b(code|function|bug|error|python|javascript|typescript|sql|regex|api|debug|compile|script)\b/.test(ql)) {
+    return pick("gpt-oss-120b", "code/technical → strongest reasoning per dollar");
+  }
+  if (/\b(translate|translation|spanish|french|german|chinese|japanese|korean|arabic)\b/.test(ql)) {
+    return pick("qwen3.6-27b", "multilingual → Qwen");
+  }
+  if (q.length > 1500 || /\b(summarize|summarise|analyze this|this document|attached)\b/.test(ql)) {
+    return pick("gemini-2.5-flash", "long-context task → Gemini");
+  }
+  if (/\b(write|story|poem|creative|draft|essay|letter|rewrite)\b/.test(ql)) {
+    return pick("llama-3.3-70b", "writing → Llama 70B");
+  }
+  return pick("llama-3.3-70b", "general question → Llama 70B default");
 }
 
 // Conversation archive: the session lives in YOUR browser (localStorage), not
@@ -302,6 +337,11 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
   const [buyOpen, setBuyOpen] = useState(false);
   const [buying, setBuying] = useState(false);
   const [claimNote, setClaimNote] = useState<string | null>(null);
+  const [routerMode, setRouterMode] = useState<RouterMode>(null);
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [attachment, setAttachment] = useState<{ name: string; text: string } | null>(null);
+  const [pasteBuf, setPasteBuf] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
   const chainRef   = useRef<string>("");
   const startedRef = useRef<string>("");
   const nextId     = useRef(1);
@@ -445,11 +485,15 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
       ]));
       const excludeRoots = new Set(recent.map(ex => ex.seal.root));
       const recalled = recallMemories(q, loadMemory(), excludeRoots);
+      const routed = routerMode ? routeQuery(q, routerMode, models) : null;
+      const sendModelId = routed ? routed.modelId : modelId;
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          modelId,
+          modelId: sendModelId,
+          ...(routed ? { routing: { mode: routerMode, rule: routed.rule } } : {}),
+          ...(attachment ? { attachment } : {}),
           messages: [...history, { role: "user", content: q }],
           memories: recalled.map(m => ({
             query: m.query, response: m.response, modelId: m.modelId,
@@ -474,11 +518,16 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         receipt: data.receipt,
         bias: data.bias ?? null,
         memoryRecall: data.memoryRecall ?? null,
+        routing: data.routing ?? null,
+        attachmentMeta: data.attachmentMeta ?? null,
         stages: data.stages,
         seal: data.seal,
         timingMs: data.timingMs,
         chainHash,
       }]);
+      setAttachment(null);
+      setPasteBuf("");
+      setAttachOpen(false);
       // Long-term memory: every sealed exchange joins the archive.
       const mem = loadMemory();
       mem.push({
@@ -504,7 +553,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
     } finally {
       setSending(false);
     }
-  }, [input, sending, modelId, thread, wallet]);
+  }, [input, sending, modelId, thread, wallet, models, routerMode, attachment]);
 
   const downloadSession = useCallback(() => {
     const payload = {
@@ -708,7 +757,18 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                   }}>
                     <div style={{ fontSize: 7, letterSpacing: "0.2em", color: m?.color, marginBottom: 4 }}>
                       {m?.name.toUpperCase()} · {m?.family.toUpperCase()} · {ex.timingMs.llm}ms
+                      {ex.routing && <span style={{ color: "#58a6ff" }}> · 🐇 ALICE·{ex.routing.mode.toUpperCase()}</span>}
                     </div>
+                    {ex.routing && (
+                      <div style={{ fontSize: 8, color: "rgba(88,166,255,0.7)", marginBottom: 5, fontFamily: "monospace" }}>
+                        routed in your browser: {ex.routing.rule}
+                      </div>
+                    )}
+                    {ex.attachmentMeta && (
+                      <div style={{ fontSize: 8, color: "rgba(88,166,255,0.7)", marginBottom: 5, fontFamily: "monospace" }}>
+                        📎 {ex.attachmentMeta.name} · {ex.attachmentMeta.chars.toLocaleString()} chars · sealed as DOCUMENT leaf
+                      </div>
+                    )}
                     <div style={{ fontSize: 12, lineHeight: 1.65, color: "rgba(255,255,255,0.85)", whiteSpace: "pre-wrap" }}>
                       {ex.response}
                     </div>
@@ -767,21 +827,110 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
 
         {/* model chips */}
         <div className="flex gap-1.5 flex-wrap mb-2">
-          {models.map(m => (
-            <button key={m.id} onClick={() => setModelId(m.id)} style={{
-              fontFamily: "monospace", fontSize: 8, letterSpacing: "0.08em", cursor: "pointer",
-              padding: "4px 8px", background: modelId === m.id ? `${m.color}18` : "rgba(4,3,10,0.8)",
-              border: `1px solid ${modelId === m.id ? m.color : "rgba(255,255,255,0.12)"}`,
-              color: modelId === m.id ? m.color : "rgba(255,255,255,0.45)",
-            }}>
-              {m.name.toUpperCase()}
-              <span style={{ opacity: 0.55 }}> · {m.family} · ${m.inPerM.toFixed(2)}/${m.outPerM.toFixed(2)} per M</span>
+          {([["save", "🐇 ALICE · SAVE $"], ["best", "🐇 ALICE · BEST"]] as const).map(([m, label]) => (
+            <button
+              key={m}
+              onClick={() => setRouterMode(r => (r === m ? null : m))}
+              title="ALICE picks the model in YOUR browser — the rule that fired is shown on every answer. Sovereign routing."
+              style={{
+                fontFamily: "monospace", fontSize: 8, letterSpacing: "0.08em", cursor: "pointer",
+                padding: "4px 8px",
+                background: routerMode === m ? "rgba(88,166,255,0.14)" : "rgba(4,3,10,0.8)",
+                border: `1px solid ${routerMode === m ? "#58a6ff" : "rgba(255,255,255,0.12)"}`,
+                color: routerMode === m ? "#58a6ff" : "rgba(255,255,255,0.45)",
+              }}
+            >
+              {label}
             </button>
           ))}
+          {models.map(m => {
+            const active = !routerMode && modelId === m.id;
+            return (
+              <button key={m.id} onClick={() => { setModelId(m.id); setRouterMode(null); }} style={{
+                fontFamily: "monospace", fontSize: 8, letterSpacing: "0.08em", cursor: "pointer",
+                padding: "4px 8px", background: active ? `${m.color}18` : "rgba(4,3,10,0.8)",
+                border: `1px solid ${active ? m.color : "rgba(255,255,255,0.12)"}`,
+                color: active ? m.color : "rgba(255,255,255,0.45)",
+                opacity: routerMode ? 0.55 : 1,
+              }}>
+                {m.name.toUpperCase()}
+                <span style={{ opacity: 0.55 }}> · {m.family} · ${m.inPerM.toFixed(2)}/${m.outPerM.toFixed(2)} per M</span>
+              </button>
+            );
+          })}
         </div>
+
+        {/* attach panel */}
+        {attachOpen && !attachment && (
+          <div style={{
+            border: "1px solid rgba(88,166,255,0.35)", background: "rgba(88,166,255,0.04)",
+            padding: "10px 12px", marginBottom: 8, fontFamily: "monospace",
+            display: "flex", flexDirection: "column", gap: 8,
+          }}>
+            <div style={{ fontSize: 8, letterSpacing: "0.15em", color: "rgba(255,255,255,0.5)" }}>
+              ATTACH TEXT — rides this one question only (up to 24,000 chars) · sealed by hash · its token cost shows on the receipt
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button onClick={() => fileRef.current?.click()} style={{
+                fontFamily: "monospace", fontSize: 9, cursor: "pointer", padding: "5px 12px",
+                border: "1px solid rgba(88,166,255,0.5)", background: "rgba(88,166,255,0.1)", color: "#58a6ff",
+              }}>CHOOSE FILE (.txt .md .csv .json)</button>
+              <input
+                ref={fileRef} type="file" accept=".txt,.md,.csv,.json,text/plain" style={{ display: "none" }}
+                onChange={e => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  f.text().then(t => setAttachment({ name: f.name.slice(0, 100), text: t.slice(0, 24_000) }));
+                  e.target.value = "";
+                }}
+              />
+              <span style={{ fontSize: 8, color: "rgba(255,255,255,0.3)" }}>or paste below:</span>
+            </div>
+            <textarea
+              value={pasteBuf}
+              onChange={e => setPasteBuf(e.target.value)}
+              placeholder="Paste a large block of text here…"
+              rows={4}
+              style={{
+                resize: "vertical", fontFamily: "monospace", fontSize: 11,
+                background: "rgba(4,3,10,0.9)", border: "1px solid rgba(255,255,255,0.12)",
+                color: "rgba(255,255,255,0.85)", padding: "8px 10px", outline: "none",
+              }}
+            />
+            {pasteBuf.trim() && (
+              <button onClick={() => { setAttachment({ name: "pasted-text.txt", text: pasteBuf.slice(0, 24_000) }); }} style={{
+                alignSelf: "flex-start", fontFamily: "monospace", fontSize: 9, cursor: "pointer",
+                padding: "5px 12px", border: "1px solid rgba(46,204,113,0.5)",
+                background: "rgba(46,204,113,0.1)", color: "#2ecc71",
+              }}>USE PASTED TEXT ({pasteBuf.length.toLocaleString()} chars{pasteBuf.length > 24_000 ? " — will trim to 24k" : ""})</button>
+            )}
+          </div>
+        )}
+        {attachment && (
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+            border: "1px solid rgba(88,166,255,0.4)", background: "rgba(88,166,255,0.06)",
+            padding: "6px 10px", marginBottom: 8, fontFamily: "monospace", fontSize: 9, color: "#58a6ff",
+          }}>
+            <span>📎 {attachment.name} · {attachment.text.length.toLocaleString()} chars — will ride your next question</span>
+            <button onClick={() => { setAttachment(null); setPasteBuf(""); }} style={{
+              background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 11,
+            }}>✕</button>
+          </div>
+        )}
 
         {/* input */}
         <div className="flex gap-2 pb-3">
+          <button
+            onClick={() => setAttachOpen(o => !o)}
+            title="Attach a text file or paste a large block — sealed by hash, priced on the receipt"
+            style={{
+              fontFamily: "monospace", fontSize: 13, cursor: "pointer", padding: "0 12px",
+              border: `1px solid ${attachment || attachOpen ? "rgba(88,166,255,0.5)" : "rgba(255,255,255,0.15)"}`,
+              background: attachment ? "rgba(88,166,255,0.1)" : "transparent",
+              color: attachment || attachOpen ? "#58a6ff" : "rgba(255,255,255,0.4)",
+            }}
+          >📎</button>
           <textarea
             value={input}
             onChange={e => setInput(e.target.value)}
