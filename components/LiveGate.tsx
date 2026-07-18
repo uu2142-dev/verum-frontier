@@ -345,6 +345,8 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
   const [routerMode, setRouterMode] = useState<RouterMode>(null);
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachment, setAttachment] = useState<{ name: string; text: string } | null>(null);
+  const [attachPinned, setAttachPinned] = useState(false);
+  const [lastAttachment, setLastAttachment] = useState<{ name: string; text: string } | null>(null);
   const [pasteBuf, setPasteBuf] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const chainRef   = useRef<string>("");
@@ -541,7 +543,12 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         timingMs: data.timingMs,
         chainHash,
       }]);
-      setAttachment(null);
+      // Pinned attachments ride every question (each receipt shows the cost);
+      // unpinned ones detach after their turn but stay one click away.
+      if (!attachPinned && attachment) {
+        setLastAttachment(attachment);
+        setAttachment(null);
+      }
       setPasteBuf("");
       setAttachOpen(false);
       // Long-term memory: every sealed exchange joins the archive.
@@ -569,7 +576,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
     } finally {
       setSending(false);
     }
-  }, [input, sending, modelId, thread, wallet, models, routerMode, attachment]);
+  }, [input, sending, modelId, thread, wallet, models, routerMode, attachment, attachPinned]);
 
   const downloadSession = useCallback(() => {
     const payload = {
@@ -934,14 +941,45 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         )}
         {attachment && (
           <div style={{
-            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
-            border: "1px solid rgba(88,166,255,0.4)", background: "rgba(88,166,255,0.06)",
-            padding: "6px 10px", marginBottom: 8, fontFamily: "monospace", fontSize: 9, color: "#58a6ff",
+            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap",
+            border: `1px solid ${attachPinned ? "rgba(200,148,26,0.5)" : "rgba(88,166,255,0.4)"}`,
+            background: attachPinned ? "rgba(200,148,26,0.07)" : "rgba(88,166,255,0.06)",
+            padding: "6px 10px", marginBottom: 8, fontFamily: "monospace", fontSize: 9,
+            color: attachPinned ? "#c8941a" : "#58a6ff",
           }}>
-            <span>📎 {attachment.name} · {attachment.text.length.toLocaleString()} chars — will ride your next question</span>
-            <button onClick={() => { setAttachment(null); setPasteBuf(""); }} style={{
-              background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 11,
-            }}>✕</button>
+            <span>
+              {attachPinned ? "📌" : "📎"} {attachment.name} · {attachment.text.length.toLocaleString()} chars —{" "}
+              {attachPinned
+                ? "PINNED: rides every question until unpinned (each receipt shows its cost)"
+                : "rides your next question only"}
+            </span>
+            <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button onClick={() => setAttachPinned(p => !p)} style={{
+                background: "none", border: "1px solid currentColor", color: "inherit",
+                cursor: "pointer", fontSize: 8, letterSpacing: "0.1em", padding: "2px 8px", fontFamily: "monospace",
+              }}>{attachPinned ? "UNPIN" : "📌 PIN FOR SESSION"}</button>
+              <button onClick={() => { setAttachment(null); setAttachPinned(false); setPasteBuf(""); }} style={{
+                background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 11,
+              }}>✕</button>
+            </span>
+          </div>
+        )}
+        {!attachment && lastAttachment && (
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+            border: "1px dashed rgba(88,166,255,0.3)", padding: "5px 10px", marginBottom: 8,
+            fontFamily: "monospace", fontSize: 9, color: "rgba(88,166,255,0.7)",
+          }}>
+            <span>📎 {lastAttachment.name} was detached after its turn (documents ride one question unless pinned)</span>
+            <span style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setAttachment(lastAttachment)} style={{
+                background: "none", border: "1px solid currentColor", color: "inherit",
+                cursor: "pointer", fontSize: 8, letterSpacing: "0.1em", padding: "2px 8px", fontFamily: "monospace",
+              }}>RE-ATTACH</button>
+              <button onClick={() => setLastAttachment(null)} style={{
+                background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 11,
+              }}>✕</button>
+            </span>
           </div>
         )}
 

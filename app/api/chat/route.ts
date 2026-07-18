@@ -34,10 +34,21 @@ const MAX_OUTPUT_TOKENS_FREE = 1024;
 const MAX_OUTPUT_TOKENS_PAID = 4096; // paying customers get room; cost-plus bills it honestly
 const MAX_ATTACH_CHARS = 24_000; // attached text rides ONE turn; its cost shows on the receipt
 
-const SYSTEM_PROMPT =
-  "You are answering through the Verum Frontier gate (Rabbit Hole AI). " +
-  "Be direct and honest. State uncertainty explicitly — if you do not know, say so. " +
-  "Prefer concise answers (under ~300 words) unless the user asks for depth.";
+// Models must know WHO they are: the gate lets users switch models
+// mid-conversation ("same question for Gemini"), so each model is told its
+// own identity and that earlier answers may come from other models.
+function systemPrompt(spec: ModelSpec): string {
+  return (
+    `You are ${spec.name}, a ${spec.family} model, answering through the ` +
+    "Verum Frontier gate (Rabbit Hole AI). The user can address different " +
+    "models within one conversation — earlier answers in the history may be " +
+    `from other models, and when the user names "${spec.name}" or your family, they mean you. ` +
+    "When the user attaches a document, its FULL TEXT is included inline in their message " +
+    "between BEGIN/END DOCUMENT markers — you can read it directly; never claim you cannot access attachments. " +
+    "Be direct and honest. State uncertainty explicitly — if you do not know, say so. " +
+    "Prefer concise answers (under ~300 words) unless the user asks for depth."
+  );
+}
 
 interface ChatMessage { role: "user" | "assistant"; content: string; }
 
@@ -195,7 +206,8 @@ function merkleRoot(leaves: string[]): string {
 // ── Providers ────────────────────────────────────────────────────────────
 
 async function callGroq(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number) {
-  const sys = memoryContext ? `${SYSTEM_PROMPT}\n\n${memoryContext}` : SYSTEM_PROMPT;
+  const base = systemPrompt(spec);
+  const sys = memoryContext ? `${base}\n\n${memoryContext}` : base;
   const body: Record<string, unknown> = {
     model: spec.providerModel,
     messages: [{ role: "system", content: sys }, ...messages],
@@ -228,7 +240,8 @@ async function callGroq(spec: ModelSpec, messages: ChatMessage[], memoryContext:
 }
 
 async function callGemini(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number) {
-  const sys = memoryContext ? `${SYSTEM_PROMPT}\n\n${memoryContext}` : SYSTEM_PROMPT;
+  const base = systemPrompt(spec);
+  const sys = memoryContext ? `${base}\n\n${memoryContext}` : base;
   const contents = messages.map(m => ({
     role: m.role === "assistant" ? "model" : "user",
     parts: [{ text: m.content }],
@@ -344,7 +357,7 @@ export async function POST(req: Request) {
     if (docText.trim()) attachment = { name, text: docText };
   }
   const providerLatest = attachment
-    ? `${latest}\n\n[ATTACHED DOCUMENT: ${attachment.name}]\n${attachment.text}`
+    ? `${latest}\n\n--- BEGIN DOCUMENT ("${attachment.name}") — full text provided by the user; read it directly ---\n${attachment.text}\n--- END DOCUMENT ---`
     : latest;
   const providerMessages: ChatMessage[] = attachment
     ? [...messages.slice(0, -1), { role: "user", content: providerLatest }]
