@@ -30,7 +30,8 @@ export const maxDuration = 60;
 const MAX_INPUT_CHARS = 4000;
 const MAX_HISTORY_CHARS = 12000;
 const MAX_HISTORY_MESSAGES = 20;
-const MAX_OUTPUT_TOKENS = 1024;
+const MAX_OUTPUT_TOKENS_FREE = 1024;
+const MAX_OUTPUT_TOKENS_PAID = 4096; // paying customers get room; cost-plus bills it honestly
 const MAX_ATTACH_CHARS = 24_000; // attached text rides ONE turn; its cost shows on the receipt
 
 const SYSTEM_PROMPT =
@@ -193,12 +194,12 @@ function merkleRoot(leaves: string[]): string {
 
 // ── Providers ────────────────────────────────────────────────────────────
 
-async function callGroq(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null) {
+async function callGroq(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number) {
   const sys = memoryContext ? `${SYSTEM_PROMPT}\n\n${memoryContext}` : SYSTEM_PROMPT;
   const body: Record<string, unknown> = {
     model: spec.providerModel,
     messages: [{ role: "system", content: sys }, ...messages],
-    max_completion_tokens: MAX_OUTPUT_TOKENS,
+    max_completion_tokens: maxTokens,
     temperature: 0.7,
   };
   if (spec.providerModel.startsWith("qwen/")) body.reasoning_format = "hidden";
@@ -223,10 +224,10 @@ async function callGroq(spec: ModelSpec, messages: ChatMessage[], memoryContext:
     inputTokens: data.usage?.prompt_tokens ?? 0,
     outputTokens: data.usage?.completion_tokens ?? 0,
   };
-  return { text, usage };
+  return { text, usage, truncated: data.choices?.[0]?.finish_reason === "length" };
 }
 
-async function callGemini(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null) {
+async function callGemini(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number) {
   const sys = memoryContext ? `${SYSTEM_PROMPT}\n\n${memoryContext}` : SYSTEM_PROMPT;
   const contents = messages.map(m => ({
     role: m.role === "assistant" ? "model" : "user",
@@ -244,7 +245,7 @@ async function callGemini(spec: ModelSpec, messages: ChatMessage[], memoryContex
         contents,
         systemInstruction: { parts: [{ text: sys }] },
         generationConfig: {
-          maxOutputTokens: MAX_OUTPUT_TOKENS,
+          maxOutputTokens: maxTokens,
           temperature: 0.7,
           // gemini-2.5-flash is a thinking model; without this it can spend
           // the whole output budget on reasoning and return empty text.
@@ -266,7 +267,7 @@ async function callGemini(spec: ModelSpec, messages: ChatMessage[], memoryContex
     inputTokens: um.promptTokenCount ?? 0,
     outputTokens: (um.candidatesTokenCount ?? 0) + (um.thoughtsTokenCount ?? 0),
   };
-  return { text, usage };
+  return { text, usage, truncated: data.candidates?.[0]?.finishReason === "MAX_TOKENS" };
 }
 
 // ── GET: model registry + quota status (client boot) ────────────────────
@@ -421,14 +422,17 @@ export async function POST(req: Request) {
     : null;
   const tMem = Date.now();
 
-  // [03] LLM CALL — the real thing
-  let text: string, usage: Usage;
+  // [03] LLM CALL — the real thing. Paying customers get 4x the answer room;
+  // cost-plus bills the extra tokens honestly either way.
+  const outputCap = paid ? MAX_OUTPUT_TOKENS_PAID : MAX_OUTPUT_TOKENS_FREE;
+  let text: string, usage: Usage, truncated = false;
   try {
     const out = spec.provider === "groq"
-      ? await callGroq(spec, providerMessages, memoryContext)
-      : await callGemini(spec, providerMessages, memoryContext);
+      ? await callGroq(spec, providerMessages, memoryContext, outputCap)
+      : await callGemini(spec, providerMessages, memoryContext, outputCap);
     text = out.text;
     usage = out.usage;
+    truncated = out.truncated ?? false;
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Provider call failed.";
     return NextResponse.json({ error: msg }, { status: 502 });
@@ -495,6 +499,8 @@ export async function POST(req: Request) {
     wallet: walletOut,
     attachmentMeta: attachment ? { name: attachment.name, chars: attachment.text.length } : null,
     routing,
+    truncated,
+    outputCap,
     stages: [
       { label: "INTENT CHECK v1", detail: "format + length validation", ms: tIntent - t0 },
       ...(routing ? [{
@@ -516,7 +522,7 @@ export async function POST(req: Request) {
           : "no relevant memories recalled",
         ms: tMem - tIntent,
       },
-      { label: `LLM CALL — ${spec.name}`, detail: `${spec.providerModel} via ${spec.provider}`, ms: tLlm - tMem },
+      { label: `LLM CALL — ${spec.name}`, detail: `${spec.providerModel} via ${spec.provider} · output cap ${outputCap.toLocaleString()}${truncated ? " — CAP HIT, answer truncated" : ""}`, ms: tLlm - tMem },
       { label: "TOKEN ACCOUNTING + COST AUDIT", detail: `${usage.inputTokens} in / ${usage.outputTokens} out`, ms: tReceipt - tLlm },
       {
         label: "BIAS SCREEN (validated v1)",

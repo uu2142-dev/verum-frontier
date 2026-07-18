@@ -45,6 +45,8 @@ interface Exchange {
   memoryRecall?: MemoryRecallInfo | null;
   routing?: { mode: string; rule: string } | null;
   attachmentMeta?: { name: string; chars: number } | null;
+  truncated?: boolean;
+  outputCap?: number;
   stages: Stage[];
   seal: { algo: string; leaves: Leaf[]; root: string; sealedAt: string; sig?: SealSig };
   timingMs: { total: number; llm: number };
@@ -197,8 +199,11 @@ function recallMemories(queryText: string, memory: MemoryItem[], excludeRoots: S
       q.forEach(w => { if (t.has(w)) overlap += 1; });
       return { m, overlap };
     })
-    .filter(x => x.overlap >= 2)
-    .sort((a, b) => b.overlap - a.overlap)
+    // A single strong content-word match is enough — natural follow-ups
+    // ("what about the second part?") rarely repeat two keywords. Ties break
+    // toward the most recent memory.
+    .filter(x => x.overlap >= 1)
+    .sort((a, b) => b.overlap - a.overlap || b.m.ts.localeCompare(a.m.ts))
     .slice(0, k)
     .map(x => x.m);
 }
@@ -484,10 +489,10 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
     setSending(true);
     setError(null);
     try {
-      // Working memory: only the last 2 exchanges ride along as history.
+      // Working memory: the last 3 exchanges ride along as history.
       // Older relevant context arrives via MEMORY RECALL instead — smaller
       // prompts, smaller receipts, and the archive does the remembering.
-      const recent = thread.slice(-2);
+      const recent = thread.slice(-3);
       const history = recent.flatMap(ex => ([
         { role: "user" as const, content: ex.query },
         { role: "assistant" as const, content: ex.response },
@@ -529,6 +534,8 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         memoryRecall: data.memoryRecall ?? null,
         routing: data.routing ?? null,
         attachmentMeta: data.attachmentMeta ?? null,
+        truncated: data.truncated ?? false,
+        outputCap: data.outputCap,
         stages: data.stages,
         seal: data.seal,
         timingMs: data.timingMs,
@@ -737,7 +744,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                 WHAT&apos;S REAL HERE: model responses, token counts, costs, hashes, timings,<br />
                 and a VALIDATED bias screen (toxicity AUROC 0.92 · framing 0.84, held-out) —<br />
                 a triage label on every answer, never a filter. Nothing is simulated in live mode.<br />
-                FREE TIER: {quota?.limit ?? 5} queries/day · answers capped at 1,024 tokens.<br />
+                FREE TIER: {quota?.limit ?? 5} queries/day · answers to 1,024 tokens (4,096 with credits).<br />
                 YOUR SESSION + MEMORY: stored in your browser only — no accounts, no server database.<br />
                 MEMORY RECALL: relevant past exchanges return as verified context — the context
                 window is working memory; your sealed archive is the long-term memory.
@@ -781,6 +788,16 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                     <div style={{ fontSize: 12, lineHeight: 1.65, color: "rgba(255,255,255,0.85)", whiteSpace: "pre-wrap" }}>
                       {ex.response}
                     </div>
+                    {ex.truncated && (
+                      <div style={{
+                        marginTop: 8, padding: "6px 10px", fontFamily: "monospace", fontSize: 9,
+                        border: "1px solid rgba(200,148,26,0.4)", background: "rgba(200,148,26,0.07)",
+                        color: "#c8941a", lineHeight: 1.7,
+                      }}>
+                        ⚠ Answer hit the {ex.outputCap?.toLocaleString() ?? "1,024"}-token cap and was cut off.
+                        Say &quot;continue&quot; to get the rest{ex.receipt.tier === "free" ? " — credits raise the cap to 4,096 tokens" : ""}.
+                      </div>
+                    )}
                     {/* receipt summary line */}
                     <button
                       onClick={() => setExpanded(open ? null : ex.id)}
