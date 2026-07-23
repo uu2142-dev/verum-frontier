@@ -19,7 +19,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { NextResponse } from "next/server";
-import { MODEL_REGISTRY, getModel, buildReceipt, type ModelSpec, type Usage } from "@/lib/pricing";
+import { MODEL_REGISTRY, getModel, buildReceipt, GROUNDING_COST_USD, type ModelSpec, type Usage } from "@/lib/pricing";
 import { FREE_DAILY_LIMIT, QUOTA_COOKIE, decodeQuota, encodeQuota, quotaResetIso } from "@/lib/quota";
 import { debitWallet, walletBalance } from "@/lib/ledger";
 import { stripeConfigured, stripeTestMode } from "@/lib/stripe";
@@ -33,6 +33,7 @@ const MAX_HISTORY_MESSAGES = 20;
 const MAX_OUTPUT_TOKENS_FREE = 1024;
 const MAX_OUTPUT_TOKENS_PAID = 4096; // paying customers get room; cost-plus bills it honestly
 const MAX_ATTACH_CHARS = 24_000; // attached text rides ONE turn; its cost shows on the receipt
+const GROUNDING_MODEL_ID = "gemini-2.5-flash"; // only Gemini has built-in Google Search grounding
 
 // Models must know WHO they are: the gate lets users switch models
 // mid-conversation ("same question for Gemini"), so each model is told its
@@ -283,6 +284,69 @@ async function callGemini(spec: ModelSpec, messages: ChatMessage[], memoryContex
   return { text, usage, truncated: data.candidates?.[0]?.finishReason === "MAX_TOKENS" };
 }
 
+export interface GroundingSource { title: string; uri: string; }
+
+// GROUNDED path: Gemini + built-in Google Search. Returns the answer plus the
+// real web sources it retrieved, so an answer is CITED rather than generated.
+// This is the fix for the failure mode where confident model prose gets
+// mistaken for a sourced document — grounded answers carry their receipts.
+async function callGeminiGrounded(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number) {
+  const base = systemPrompt(spec) +
+    " You have Google Search. Ground your answer in the retrieved results and " +
+    "rely only on what they support; if the results do not substantiate a claim, " +
+    "say so plainly rather than filling the gap.";
+  const sys = memoryContext ? `${base}\n\n${memoryContext}` : base;
+  const contents = messages.map(m => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${spec.providerModel}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "x-goog-api-key": process.env.GEMINI_API_KEY ?? "",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents,
+        systemInstruction: { parts: [{ text: sys }] },
+        tools: [{ google_search: {} }],
+        generationConfig: { maxOutputTokens: maxTokens, temperature: 0.4 },
+      }),
+      signal: AbortSignal.timeout(55_000),
+    },
+  );
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Gemini (grounded) ${res.status}: ${detail.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const parts: Array<{ text?: string }> = data.candidates?.[0]?.content?.parts ?? [];
+  const text = parts.map(p => p.text ?? "").join("").trim();
+  const um = data.usageMetadata ?? {};
+  const usage: Usage = {
+    inputTokens: um.promptTokenCount ?? 0,
+    outputTokens: (um.candidatesTokenCount ?? 0) + (um.thoughtsTokenCount ?? 0),
+  };
+  const gm = data.candidates?.[0]?.groundingMetadata ?? {};
+  const chunks: Array<{ web?: { uri?: string; title?: string } }> = gm.groundingChunks ?? [];
+  const seen = new Set<string>();
+  const sources: GroundingSource[] = [];
+  for (const c of chunks) {
+    const uri = c.web?.uri;
+    if (!uri || seen.has(uri)) continue;
+    seen.add(uri);
+    sources.push({ title: c.web?.title || uri, uri });
+  }
+  const searchQueries: string[] = gm.webSearchQueries ?? [];
+  return {
+    text, usage,
+    truncated: data.candidates?.[0]?.finishReason === "MAX_TOKENS",
+    sources, searchQueries,
+  };
+}
+
 // ── GET: model registry + quota status (client boot) ────────────────────
 
 export async function GET(req: Request) {
@@ -296,6 +360,11 @@ export async function GET(req: Request) {
     })),
     quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
     payments: { enabled: stripeConfigured(), testMode: stripeTestMode() },
+    grounding: {
+      available: !!process.env.GEMINI_API_KEY,
+      via: "Gemini 2.5 Flash + Google Search",
+      surchargeUsd: GROUNDING_COST_USD,
+    },
     sealKey: k
       ? {
           alg: "Ed25519", keyId: k.keyId, publicKeySpkiB64: k.spkiB64,
@@ -320,6 +389,7 @@ export async function POST(req: Request) {
     // the model and can show the rule); we echo it as a labeled stage.
     routing?: { mode?: string; rule?: string };
     attachment?: { name?: string; text?: string };
+    grounded?: boolean; // GROUND IT — route through Gemini + Google Search, cite sources
   };
   try {
     body = await req.json();
@@ -367,6 +437,12 @@ export async function POST(req: Request) {
   const routing = (body.routing?.mode === "save" || body.routing?.mode === "best")
     ? { mode: body.routing.mode, rule: String(body.routing.rule ?? "").slice(0, 140) }
     : null;
+
+  // GROUNDING — only Gemini has built-in Google Search, so GROUND IT overrides
+  // the selected model to Gemini-grounded. callSpec is who actually answers.
+  const groundingRequested = body.grounded === true;
+  const geminiSpec = getModel(GROUNDING_MODEL_ID);
+  const callSpec = (groundingRequested && geminiSpec) ? geminiSpec : spec;
 
   // Free-tier quota
   // Paid path: wallet credentials are verified against the ledger BEFORE the
@@ -436,24 +512,32 @@ export async function POST(req: Request) {
   const tMem = Date.now();
 
   // [03] LLM CALL — the real thing. Paying customers get 4x the answer room;
-  // cost-plus bills the extra tokens honestly either way.
+  // cost-plus bills the extra tokens honestly either way. GROUND IT routes to
+  // Gemini + Google Search and returns cited sources.
   const outputCap = paid ? MAX_OUTPUT_TOKENS_PAID : MAX_OUTPUT_TOKENS_FREE;
   let text: string, usage: Usage, truncated = false;
+  let grounding: { sources: GroundingSource[]; searchQueries: string[] } | null = null;
   try {
-    const out = spec.provider === "groq"
-      ? await callGroq(spec, providerMessages, memoryContext, outputCap)
-      : await callGemini(spec, providerMessages, memoryContext, outputCap);
-    text = out.text;
-    usage = out.usage;
-    truncated = out.truncated ?? false;
+    if (groundingRequested && geminiSpec) {
+      const out = await callGeminiGrounded(callSpec, providerMessages, memoryContext, outputCap);
+      text = out.text; usage = out.usage; truncated = out.truncated ?? false;
+      grounding = { sources: out.sources, searchQueries: out.searchQueries };
+    } else {
+      const out = callSpec.provider === "groq"
+        ? await callGroq(callSpec, providerMessages, memoryContext, outputCap)
+        : await callGemini(callSpec, providerMessages, memoryContext, outputCap);
+      text = out.text; usage = out.usage; truncated = out.truncated ?? false;
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Provider call failed.";
     return NextResponse.json({ error: msg }, { status: 502 });
   }
   const tLlm = Date.now();
+  const isGrounded = grounding !== null;
 
   // [03] TOKEN ACCOUNTING + COST AUDIT — cost-plus receipt from real usage
-  const receipt = buildReceipt(spec, usage);
+  // (grounded queries carry Google's real search-grounding surcharge).
+  const receipt = buildReceipt(callSpec, usage, isGrounded ? 1 : 0);
   const tReceipt = Date.now();
 
   // [04] BIAS SCREEN — validated dual-head triage label (fail-open)
@@ -468,7 +552,7 @@ export async function POST(req: Request) {
   if (paid && wallet) {
     const d = await debitWallet(
       wallet.id, wallet.token, receipt.totalUsd,
-      `chat ${spec.id} ${usage.inputTokens}in/${usage.outputTokens}out`,
+      `chat ${callSpec.id}${isGrounded ? "+grounded" : ""} ${usage.inputTokens}in/${usage.outputTokens}out`,
     );
     if (d.ok && d.data) {
       receipt.chargedUsd = d.data.debited_usd;
@@ -490,11 +574,12 @@ export async function POST(req: Request) {
   const leaves = [
     { label: "QUERY",    sha256: sha256(JSON.stringify({ q: latest, ts: sealedAt })) },
     ...(attachment ? [{ label: "DOCUMENT", sha256: sha256(JSON.stringify({ name: attachment.name, doc: attachment.text })) }] : []),
-    { label: "RESPONSE", sha256: sha256(JSON.stringify({ r: text, model: spec.id })) },
+    { label: "RESPONSE", sha256: sha256(JSON.stringify({ r: text, model: callSpec.id })) },
+    ...(grounding ? [{ label: "SOURCES", sha256: sha256(JSON.stringify(grounding.sources.map(s => s.uri))) }] : []),
     { label: "RECEIPT",  sha256: sha256(JSON.stringify(receipt)) },
     ...(bias ? [{ label: "BIAS", sha256: sha256(JSON.stringify(bias)) }] : []),
     ...(memoryRecall ? [{ label: "MEMORY", sha256: sha256(JSON.stringify(memoryRecall.roots)) }] : []),
-    { label: "TIMING",   sha256: sha256(JSON.stringify({ model: spec.providerModel, llmMs: tLlm - tMem })) },
+    { label: "TIMING",   sha256: sha256(JSON.stringify({ model: callSpec.providerModel, llmMs: tLlm - tMem })) },
   ];
   const root = merkleRoot(leaves.map(l => l.sha256));
   const sig = signRoot(root, sealedAt);
@@ -502,13 +587,21 @@ export async function POST(req: Request) {
 
   // Paid queries do not consume the free-tier quota.
   const newQuota = paid ? { d: q.d, n: q.n } : { d: q.d, n: q.n + 1 };
+  const groundingLabel = isGrounded
+    ? `GROUNDED · ${grounding!.sources.length} source${grounding!.sources.length === 1 ? "" : "s"} retrieved & cited via Google Search`
+    : "UNGROUNDED — generated from model training, not retrieved or verified";
+
   const res = NextResponse.json({
     text,
-    modelId: spec.id,
+    modelId: callSpec.id,
+    requestedModelId: spec.id,
     usage,
     receipt,
     bias,
     memoryRecall,
+    grounded: isGrounded,
+    grounding: grounding ? { sources: grounding.sources, searchQueries: grounding.searchQueries } : null,
+    groundingLabel,
     wallet: walletOut,
     attachmentMeta: attachment ? { name: attachment.name, chars: attachment.text.length } : null,
     routing,
@@ -535,8 +628,15 @@ export async function POST(req: Request) {
           : "no relevant memories recalled",
         ms: tMem - tIntent,
       },
-      { label: `LLM CALL — ${spec.name}`, detail: `${spec.providerModel} via ${spec.provider} · output cap ${outputCap.toLocaleString()}${truncated ? " — CAP HIT, answer truncated" : ""}`, ms: tLlm - tMem },
-      { label: "TOKEN ACCOUNTING + COST AUDIT", detail: `${usage.inputTokens} in / ${usage.outputTokens} out`, ms: tReceipt - tLlm },
+      { label: `LLM CALL — ${callSpec.name}${isGrounded ? " (grounded)" : ""}`, detail: `${callSpec.providerModel} via ${callSpec.provider}${groundingRequested && callSpec.id !== spec.id ? ` (GROUND IT overrode ${spec.name})` : ""} · output cap ${outputCap.toLocaleString()}${truncated ? " — CAP HIT, answer truncated" : ""}`, ms: tLlm - tMem },
+      {
+        label: "GROUNDING",
+        detail: isGrounded
+          ? `Google Search · ${grounding!.sources.length} source${grounding!.sources.length === 1 ? "" : "s"} cited — answer retrieved, not just generated`
+          : "UNGROUNDED — answer generated from model training, not retrieved or verified",
+        ms: 0,
+      },
+      { label: "TOKEN ACCOUNTING + COST AUDIT", detail: `${usage.inputTokens} in / ${usage.outputTokens} out${isGrounded ? " + 1 grounded search" : ""}`, ms: tReceipt - tLlm },
       {
         label: "BIAS SCREEN (validated v1)",
         detail: bias

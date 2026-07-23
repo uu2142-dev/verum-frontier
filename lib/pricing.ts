@@ -15,6 +15,12 @@
 
 export const PRICE_SHEET_DATE = "2026-07-14";
 
+// Google Search grounding surcharge — Google bills grounded requests separately
+// from tokens ($35 / 1,000 requests = $0.035/request, pinned from
+// ai.google.dev/gemini-api/docs/pricing). A grounded answer costs real money to
+// retrieve-and-cite; the receipt shows it so nothing hides.
+export const GROUNDING_COST_USD = 0.035;
+
 export type Provider = "groq" | "google";
 
 export interface ModelSpec {
@@ -103,30 +109,34 @@ export interface Receipt {
   model: string;
   rates: { inPerM: number; outPerM: number };
   usage: Usage;
-  directUsd: number;
-  infraUsd: number;      // 5% of direct
-  supportUsd: number;    // 15% of direct
+  directUsd: number;     // token cost (real counts × rates)
+  groundingUsd: number;  // Google Search grounding surcharge (0 when ungrounded)
+  infraUsd: number;      // 5% of (direct + grounding)
+  supportUsd: number;    // 15% of (direct + grounding)
   supportSplit: { server: number; development: number; steward: number; reserve: number };
-  totalUsd: number;      // direct × 1.20
+  totalUsd: number;      // (direct + grounding) × 1.20
   chargedUsd: number;    // 0 on the free tier; exact totalUsd when paid from credits
   tier: "free" | "credits";
 }
 
 const usd = (v: number) => Number(v.toFixed(9));
 
-export function buildReceipt(spec: ModelSpec, usage: Usage): Receipt {
+export function buildReceipt(spec: ModelSpec, usage: Usage, groundingRequests = 0): Receipt {
   const direct = usd(
     (usage.inputTokens / 1_000_000) * spec.inPerM +
     (usage.outputTokens / 1_000_000) * spec.outPerM,
   );
-  const infra = usd(direct * INFRA_PCT);
-  const support = usd(direct * SUPPORT_PCT);
+  const grounding = usd(groundingRequests * GROUNDING_COST_USD);
+  const base = direct + grounding;
+  const infra = usd(base * INFRA_PCT);
+  const support = usd(base * SUPPORT_PCT);
   return {
     priceSheetDate: PRICE_SHEET_DATE,
     model: spec.id,
     rates: { inPerM: spec.inPerM, outPerM: spec.outPerM },
     usage,
     directUsd: direct,
+    groundingUsd: grounding,
     infraUsd: infra,
     supportUsd: support,
     supportSplit: {
@@ -135,7 +145,7 @@ export function buildReceipt(spec: ModelSpec, usage: Usage): Receipt {
       steward: usd(support * SUPPORT_SPLIT.steward),
       reserve: usd(support * SUPPORT_SPLIT.reserve),
     },
-    totalUsd: usd(direct + infra + support),
+    totalUsd: usd(base + infra + support),
     chargedUsd: 0,
     tier: "free",
   };

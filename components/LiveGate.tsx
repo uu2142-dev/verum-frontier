@@ -20,10 +20,12 @@ interface Receipt {
   priceSheetDate: string; model: string;
   rates: { inPerM: number; outPerM: number };
   usage: { inputTokens: number; outputTokens: number };
-  directUsd: number; infraUsd: number; supportUsd: number;
+  directUsd: number; groundingUsd?: number; infraUsd: number; supportUsd: number;
   supportSplit: { server: number; development: number; steward: number; reserve: number };
   totalUsd: number; chargedUsd: number; tier: string;
 }
+interface GroundingSource { title: string; uri: string; }
+interface GroundingInfo { sources: GroundingSource[]; searchQueries: string[]; }
 interface BiasResult {
   version: string;
   toxicity: number; toxicityPctile: number;
@@ -47,6 +49,9 @@ interface Exchange {
   attachmentMeta?: { name: string; chars: number } | null;
   truncated?: boolean;
   outputCap?: number;
+  grounded?: boolean;
+  grounding?: GroundingInfo | null;
+  groundingLabel?: string;
   stages: Stage[];
   seal: { algo: string; leaves: Leaf[]; root: string; sealedAt: string; sig?: SealSig };
   timingMs: { total: number; llm: number };
@@ -224,6 +229,12 @@ function ReceiptCard({ r, color }: { r: Receipt; color: string }) {
       <Row k="DIRECT API COST" v={fmtUsd(r.directUsd)} strong color={color} />
       <Sub k={`${r.usage.inputTokens.toLocaleString()} in × $${r.rates.inPerM.toFixed(2)}/M`} />
       <Sub k={`${r.usage.outputTokens.toLocaleString()} out × $${r.rates.outPerM.toFixed(2)}/M`} />
+      {!!r.groundingUsd && r.groundingUsd > 0 && (
+        <>
+          <Row k="GROUNDING (Google Search)" v={fmtUsd(r.groundingUsd)} color="#58a6ff" />
+          <Sub k="1 grounded search — real retrieval, real cost" />
+        </>
+      )}
       <Row k="INFRASTRUCTURE (5%)" v={fmtUsd(r.infraUsd)} />
       <Row k="PROJECT SUPPORT (15%)" v={fmtUsd(r.supportUsd)} />
       <Sub k={`server 30% · development 40% · steward 20% · reserve 10%`} />
@@ -287,6 +298,49 @@ function BiasCard({ b }: { b: BiasResult | null }) {
   );
 }
 
+// ── Grounding view ────────────────────────────────────────────────────────
+// The fix for "confident prose mistaken for a sourced document." A grounded
+// answer shows the real web sources it was retrieved from; an ungrounded one
+// says so plainly. Sources are sealed as a SOURCES Merkle leaf.
+
+function sourceHost(uri: string): string {
+  try { return new URL(uri).hostname.replace(/^www\./, ""); } catch { return uri.slice(0, 40); }
+}
+
+function GroundingView({ ex }: { ex: Exchange }) {
+  const grounded = !!ex.grounded;
+  return (
+    <div style={{ fontFamily: "monospace", fontSize: 8, lineHeight: 1.8 }}>
+      <div style={{
+        color: grounded ? "#58a6ff" : "rgba(200,148,26,0.7)", fontSize: 7, letterSpacing: "0.2em", marginBottom: 4,
+      }}>
+        {grounded ? "🔎 GROUNDING · GOOGLE SEARCH" : "⚠ GROUNDING · NONE"}
+      </div>
+      <div style={{ color: grounded ? "rgba(88,166,255,0.85)" : "rgba(200,148,26,0.85)", marginBottom: grounded ? 5 : 0, lineHeight: 1.7 }}>
+        {ex.groundingLabel ?? (grounded ? "GROUNDED" : "UNGROUNDED — generated from model training, not retrieved or verified")}
+      </div>
+      {grounded && ex.grounding && ex.grounding.sources.length > 0 && (
+        <>
+          {ex.grounding.searchQueries.length > 0 && (
+            <div style={{ color: "rgba(255,255,255,0.3)", marginBottom: 3 }}>
+              searched: {ex.grounding.searchQueries.join(" · ")}
+            </div>
+          )}
+          {ex.grounding.sources.map((s, i) => (
+            <div key={i} style={{ display: "flex", gap: 6 }}>
+              <span style={{ color: "rgba(255,255,255,0.3)" }}>[{i + 1}]</span>
+              <a href={s.uri} target="_blank" rel="noopener noreferrer"
+                 style={{ color: "rgba(88,166,255,0.75)", textDecoration: "none", wordBreak: "break-all" }}>
+                {s.title || sourceHost(s.uri)}
+              </a>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Seal view ─────────────────────────────────────────────────────────────
 
 function SealView({ ex }: { ex: Exchange }) {
@@ -343,6 +397,8 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
   const [buying, setBuying] = useState(false);
   const [claimNote, setClaimNote] = useState<string | null>(null);
   const [routerMode, setRouterMode] = useState<RouterMode>(null);
+  const [ground, setGround] = useState<{ available: boolean; via: string; surchargeUsd: number }>({ available: false, via: "", surchargeUsd: 0 });
+  const [groundOn, setGroundOn] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachment, setAttachment] = useState<{ name: string; text: string } | null>(null);
   const [attachPinned, setAttachPinned] = useState(false);
@@ -419,6 +475,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         setQuota(d.quota ?? null);
         setSealKey(d.sealKey ?? null);
         setPayments(d.payments ?? { enabled: false, testMode: false });
+        if (d.grounding) setGround(d.grounding);
       })
       .catch(() => {
         setBootFailed(true);
@@ -510,6 +567,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
           modelId: sendModelId,
           ...(routed ? { routing: { mode: routerMode, rule: routed.rule } } : {}),
           ...(attachment ? { attachment } : {}),
+          ...(groundOn ? { grounded: true } : {}),
           messages: [...history, { role: "user", content: q }],
           memories: recalled.map(m => ({
             query: m.query, response: m.response, modelId: m.modelId,
@@ -538,6 +596,9 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         attachmentMeta: data.attachmentMeta ?? null,
         truncated: data.truncated ?? false,
         outputCap: data.outputCap,
+        grounded: data.grounded ?? false,
+        grounding: data.grounding ?? null,
+        groundingLabel: data.groundingLabel,
         stages: data.stages,
         seal: data.seal,
         timingMs: data.timingMs,
@@ -576,7 +637,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
     } finally {
       setSending(false);
     }
-  }, [input, sending, modelId, thread, wallet, models, routerMode, attachment, attachPinned]);
+  }, [input, sending, modelId, thread, wallet, models, routerMode, attachment, attachPinned, groundOn]);
 
   const downloadSession = useCallback(() => {
     const payload = {
@@ -590,6 +651,8 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
         model: ex.modelId,
         receipt: ex.receipt,
         biasScreen: ex.bias,
+        grounded: ex.grounded ?? false,
+        grounding: ex.grounding ?? null,
         seal: ex.seal,
         timingMs: ex.timingMs,
         sessionChainHash: ex.chainHash,
@@ -754,7 +817,10 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                 FREE TIER: {quota?.limit ?? 5} queries/day · answers to 1,024 tokens (4,096 with credits).<br />
                 YOUR SESSION + MEMORY: stored in your browser only — no accounts, no server database.<br />
                 MEMORY RECALL: relevant past exchanges return as verified context — the context
-                window is working memory; your sealed archive is the long-term memory.
+                window is working memory; your sealed archive is the long-term memory.<br />
+                🔎 GROUND IT: route a factual question through Google Search — the answer comes back
+                cited to real sources, sealed. Every other answer is stamped &quot;ungrounded&quot; so
+                confident prose is never mistaken for a sourced document.
               </div>
             </div>
           )}
@@ -795,6 +861,24 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                     <div style={{ fontSize: 12, lineHeight: 1.65, color: "rgba(255,255,255,0.85)", whiteSpace: "pre-wrap" }}>
                       {ex.response}
                     </div>
+                    {/* grounding honesty label — on every answer */}
+                    {ex.grounded ? (
+                      <div style={{
+                        marginTop: 7, padding: "5px 9px", fontFamily: "monospace", fontSize: 8,
+                        border: "1px solid rgba(88,166,255,0.4)", background: "rgba(88,166,255,0.07)",
+                        color: "#58a6ff", lineHeight: 1.7, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center",
+                      }}>
+                        <span>🔎 GROUNDED · {ex.grounding?.sources.length ?? 0} source{(ex.grounding?.sources.length ?? 0) === 1 ? "" : "s"} via Google Search:</span>
+                        {(ex.grounding?.sources ?? []).slice(0, 6).map((s, i) => (
+                          <a key={i} href={s.uri} target="_blank" rel="noopener noreferrer"
+                             style={{ color: "rgba(88,166,255,0.85)", textDecoration: "underline" }}>{s.title || sourceHost(s.uri)}</a>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: 6, fontFamily: "monospace", fontSize: 7.5, color: "rgba(255,255,255,0.3)", letterSpacing: "0.03em" }}>
+                        ○ ungrounded — generated from model training, not retrieved or verified
+                      </div>
+                    )}
                     {ex.truncated && (
                       <div style={{
                         marginTop: 8, padding: "6px 10px", fontFamily: "monospace", fontSize: 9,
@@ -822,6 +906,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                     {open && (
                       <div style={{ marginTop: 8, borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: 8, display: "grid", gap: 10 }}>
                         <ReceiptCard r={ex.receipt} color={m?.color ?? "#fff"} />
+                        <GroundingView ex={ex} />
                         <BiasCard b={ex.bias} />
                         <SealView ex={ex} />
                       </div>
@@ -860,6 +945,21 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
 
         {/* model chips */}
         <div className="flex gap-1.5 flex-wrap mb-2">
+          {ground.available && (
+            <button
+              onClick={() => setGroundOn(g => !g)}
+              title={`GROUND IT routes your query through ${ground.via} — real web sources, cited and sealed. Adds Google's search-grounding cost to the receipt. Overrides the selected model (only Gemini grounds).`}
+              style={{
+                fontFamily: "monospace", fontSize: 8, letterSpacing: "0.08em", cursor: "pointer",
+                padding: "4px 8px",
+                background: groundOn ? "rgba(88,166,255,0.18)" : "rgba(4,3,10,0.8)",
+                border: `1px solid ${groundOn ? "#58a6ff" : "rgba(255,255,255,0.12)"}`,
+                color: groundOn ? "#58a6ff" : "rgba(255,255,255,0.45)",
+              }}
+            >
+              🔎 GROUND IT{groundOn ? " · ON" : ""}
+            </button>
+          )}
           {([["save", "🐇 ALICE · SAVE $"], ["best", "🐇 ALICE · BEST"]] as const).map(([m, label]) => (
             <button
               key={m}
@@ -1061,6 +1161,7 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                 ))}
               </div>
               <ReceiptCard r={last.receipt} color={models.find(m => m.id === last.modelId)?.color ?? "#fff"} />
+              <GroundingView ex={last} />
               <BiasCard b={last.bias} />
               <SealView ex={last} />
             </div>
