@@ -19,7 +19,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { NextResponse } from "next/server";
-import { MODEL_REGISTRY, getModel, buildReceipt, GROUNDING_COST_USD, type ModelSpec, type Usage } from "@/lib/pricing";
+import { MODEL_REGISTRY, PREMIUM_MODELS, getModel, buildReceipt, GROUNDING_COST_USD, type ModelSpec, type Usage } from "@/lib/pricing";
 import { FREE_DAILY_LIMIT, QUOTA_COOKIE, decodeQuota, encodeQuota, quotaResetIso } from "@/lib/quota";
 import { debitWallet, walletBalance } from "@/lib/ledger";
 import { stripeConfigured, stripeTestMode } from "@/lib/stripe";
@@ -347,6 +347,113 @@ async function callGeminiGrounded(spec: ModelSpec, messages: ChatMessage[], memo
   };
 }
 
+// ── Premium providers (credits only) ─────────────────────────────────────
+
+// A model is only advertised when its provider key exists — the boot list must
+// never offer a model the gate can't actually call.
+function providerConfigured(p: ModelSpec["provider"]): boolean {
+  switch (p) {
+    case "groq":      return !!process.env.GROQ_API_KEY;
+    case "google":    return !!process.env.GEMINI_API_KEY;
+    case "anthropic": return !!process.env.ANTHROPIC_API_KEY;
+    case "openai":    return !!process.env.OPENAI_API_KEY;
+    case "xai":       return !!process.env.XAI_API_KEY;
+    default:          return false;
+  }
+}
+
+// Anthropic Messages API. Deliberately minimal: NO temperature/top_p/top_k —
+// those are REMOVED on Opus 4.8 / Sonnet 5 / Fable 5 and return 400, so the
+// Gemini adapter's shape must NOT be copied here. Thinking config differs per
+// model, so it is opt-in per id rather than assumed.
+async function callAnthropic(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number) {
+  const base = systemPrompt(spec);
+  const sys = memoryContext ? `${base}\n\n${memoryContext}` : base;
+  const body: Record<string, unknown> = {
+    model: spec.providerModel,
+    max_tokens: maxTokens,
+    system: sys,
+    messages,
+  };
+  // Sonnet 5 runs adaptive thinking BY DEFAULT — for chat we want predictable,
+  // cheap, honestly-priced receipts, so turn it off explicitly (accepted there).
+  // Opus 4.8 and Haiku 4.5 run without thinking when the field is omitted.
+  // Fable 5 is always-on and REJECTS any thinking config — never send it one.
+  if (spec.providerModel === "claude-sonnet-5") body.thinking = { type: "disabled" };
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(55_000),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Anthropic ${res.status}: ${detail.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const usage: Usage = {
+    inputTokens: data.usage?.input_tokens ?? 0,
+    outputTokens: data.usage?.output_tokens ?? 0,
+  };
+  // A safety decline arrives as HTTP 200 with stop_reason "refusal" and empty
+  // content. Check stop_reason BEFORE reading content, or the gate throws on a
+  // refusal instead of reporting it honestly.
+  if (data.stop_reason === "refusal") {
+    return {
+      text: "This model declined to answer under its own safety policy (stop_reason: refusal). " +
+        "No content was generated. The receipt below reflects what was actually billed.",
+      usage,
+      truncated: false,
+    };
+  }
+  const blocks: Array<{ type?: string; text?: string }> = data.content ?? [];
+  const text = blocks.filter(b => b.type === "text").map(b => b.text ?? "").join("").trim();
+  return { text, usage, truncated: data.stop_reason === "max_tokens" };
+}
+
+// OpenAI and xAI both speak the OpenAI chat-completions shape, so one adapter
+// covers both. Kept SEPARATE from callGroq on purpose: the free council is live
+// and taking real traffic, and refactoring it into a shared path would risk the
+// working receipt math for no user-visible gain.
+// No temperature — current OpenAI reasoning models reject non-default sampling.
+async function callOpenAICompatible(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number) {
+  const base = systemPrompt(spec);
+  const sys = memoryContext ? `${base}\n\n${memoryContext}` : base;
+  const cfg = spec.provider === "xai"
+    ? { url: "https://api.x.ai/v1/chat/completions", key: process.env.XAI_API_KEY, label: "xAI" }
+    : { url: "https://api.openai.com/v1/chat/completions", key: process.env.OPENAI_API_KEY, label: "OpenAI" };
+
+  const res = await fetch(cfg.url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${cfg.key ?? ""}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: spec.providerModel,
+      messages: [{ role: "system", content: sys }, ...messages],
+      max_completion_tokens: maxTokens,
+    }),
+    signal: AbortSignal.timeout(55_000),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`${cfg.label} ${res.status}: ${detail.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const text: string = (data.choices?.[0]?.message?.content ?? "").trim();
+  const usage: Usage = {
+    inputTokens: data.usage?.prompt_tokens ?? 0,
+    outputTokens: data.usage?.completion_tokens ?? 0,
+  };
+  return { text, usage, truncated: data.choices?.[0]?.finish_reason === "length" };
+}
+
 // ── GET: model registry + quota status (client boot) ────────────────────
 
 export async function GET(req: Request) {
@@ -354,9 +461,14 @@ export async function GET(req: Request) {
   const q = decodeQuota(cookie);
   const k = signingKeys();
   return NextResponse.json({
-    models: MODEL_REGISTRY.map(m => ({
+    // Free council always; premium only where the provider key is configured.
+    models: [
+      ...MODEL_REGISTRY,
+      ...PREMIUM_MODELS.filter(m => providerConfigured(m.provider)),
+    ].map(m => ({
       id: m.id, name: m.name, family: m.family, color: m.color,
       inPerM: m.inPerM, outPerM: m.outPerM, note: m.note,
+      tier: m.tier ?? "free",
     })),
     quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
     payments: { enabled: stripeConfigured(), testMode: stripeTestMode() },
@@ -469,6 +581,21 @@ export async function POST(req: Request) {
       { status: 429 },
     );
   }
+  // Premium is CREDITS ONLY, enforced before the LLM call so a free-tier
+  // visitor can never spend our money on a $30-per-million-output model.
+  // Checked on callSpec, not spec: GROUND IT overrides to free Gemini, and in
+  // that case no premium model is billed.
+  if (callSpec.tier === "premium" && !paid) {
+    return NextResponse.json(
+      {
+        error: `${callSpec.name} is a premium model — it runs on prepaid credits, not the free tier. ` +
+          `Add credits to unlock it; the free council stays free.`,
+        premiumLocked: true,
+        quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
+      },
+      { status: 402 },
+    );
+  }
   const tIntent = Date.now();
 
   // [02] MEMORY RECALL — client-recalled sealed memories, server-verified.
@@ -523,8 +650,13 @@ export async function POST(req: Request) {
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
       grounding = { sources: out.sources, searchQueries: out.searchQueries };
     } else {
-      const out = callSpec.provider === "groq"
-        ? await callGroq(callSpec, providerMessages, memoryContext, outputCap)
+      const out =
+        callSpec.provider === "groq"
+          ? await callGroq(callSpec, providerMessages, memoryContext, outputCap)
+        : callSpec.provider === "anthropic"
+          ? await callAnthropic(callSpec, providerMessages, memoryContext, outputCap)
+        : (callSpec.provider === "openai" || callSpec.provider === "xai")
+          ? await callOpenAICompatible(callSpec, providerMessages, memoryContext, outputCap)
         : await callGemini(callSpec, providerMessages, memoryContext, outputCap);
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
     }

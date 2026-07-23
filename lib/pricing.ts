@@ -21,7 +21,7 @@ export const PRICE_SHEET_DATE = "2026-07-14";
 // retrieve-and-cite; the receipt shows it so nothing hides.
 export const GROUNDING_COST_USD = 0.035;
 
-export type Provider = "groq" | "google" | "anthropic";
+export type Provider = "groq" | "google" | "anthropic" | "openai" | "xai";
 
 // "free"    → eligible for the daily free tier (the current open-weight council)
 // "premium" → credits-only; too expensive to give away, gated behind a funded
@@ -91,25 +91,22 @@ export const MODEL_REGISTRY: readonly ModelSpec[] = [
   },
 ] as const;
 
-// ── PREMIUM TIER (pending go-live) ───────────────────────────────────────
-// Real Anthropic prices, pinned 2026-07-23 from the PRIMARY source
-// (platform.claude.com/docs → Pricing · Model pricing table). USD per 1M
-// tokens, standard on-demand rates. These are NOT invented — unlike the
-// specs a certain ungrounded model volunteered, every number here traces to
-// the provider's own page, the same discipline as GROUNDING_COST_USD.
+// ── PREMIUM TIER — credits only ──────────────────────────────────────────
+// Every rate below was pinned 2026-07-23 from the provider's OWN pricing page:
+//   Anthropic  platform.claude.com/docs → Pricing · Model pricing
+//   OpenAI     developers.openai.com/api/docs/pricing
+//   xAI        docs.x.ai/docs/models
+// Not one number came from a model's say-so — the same rule the gate applies
+// to its own answers, and the same discipline as GROUNDING_COST_USD.
 //
-// NOT yet merged into MODEL_REGISTRY: the boot must not advertise a model the
-// gate can't call. Go-live checklist (each a real, verifiable step):
-//   1. Add ANTHROPIC_API_KEY to Vercel env.
-//   2. Add a callAnthropic() adapter in app/api/chat/route.ts (Messages API:
-//      POST /v1/messages, headers x-api-key + anthropic-version, body
-//      { model, max_tokens, system, messages }; usage.input_tokens /
-//      usage.output_tokens; stop_reason === "max_tokens" ⇒ truncated).
-//   3. Env-gate: only surface these when process.env.ANTHROPIC_API_KEY is set
-//      (same pattern as grounding availability).
-//   4. Enforce tier === "premium" ⇒ credits-only (no free-tier debit).
-//   5. Verify a real Opus 4.8 call returns sealed, on the FIRST live call —
-//      do not trust the adapter until a genuine round-trip is receipted.
+// Two invariants enforced in app/api/chat/route.ts, not here:
+//   1. A premium model is never advertised unless its provider key is set.
+//   2. tier === "premium" ⇒ credits only. Never billed to the free tier.
+//
+// Re-pin: Sonnet 5 steps $2/$10 → $3/$15 on 2026-09-01.
+// xAI: grok-4.5 is $2/$6 under 200k context, $4/$12 above. Chat prompts here
+// are capped far below 200k, so the under-200k rate is the honest one —
+// revisit if a long-document mode ever lifts that cap.
 //
 // Adapter gotchas (verified against Anthropic's own API reference — these are
 // 400s, not style notes, and callGemini's current shape would trip two of them):
@@ -136,7 +133,7 @@ export const MODEL_REGISTRY: readonly ModelSpec[] = [
 //
 // Sonnet 5 carries introductory pricing ($2/$10) through 2026-08-31; it steps
 // to $3/$15 on 2026-09-01. Re-verify and re-pin then (bump PRICE_SHEET_DATE).
-export const PREMIUM_MODELS_PENDING: readonly ModelSpec[] = [
+export const PREMIUM_MODELS: readonly ModelSpec[] = [
   {
     id: "claude-opus-4.8",
     providerModel: "claude-opus-4-8",
@@ -179,16 +176,43 @@ export const PREMIUM_MODELS_PENDING: readonly ModelSpec[] = [
     provider: "anthropic",
     name: "Claude Fable 5",
     family: "Anthropic",
-    color: "#c8a96e",
+    color: "#e0b354",
     inPerM: 10,
     outPerM: 50,
-    note: "Premium creative · credits only",
+    note: "Most capable · always-on reasoning · credits only",
+    tier: "premium",
+  },
+  {
+    id: "gpt-5.6-sol",
+    providerModel: "gpt-5.6-sol",
+    provider: "openai",
+    name: "GPT-5.6 Sol",
+    family: "OpenAI",
+    color: "#74aa9c",
+    inPerM: 5,
+    outPerM: 30,
+    note: "OpenAI flagship · credits only",
+    tier: "premium",
+  },
+  {
+    id: "grok-4.5",
+    providerModel: "grok-4.5",
+    provider: "xai",
+    name: "Grok 4.5",
+    family: "xAI",
+    color: "#a8b3c4",
+    inPerM: 2,
+    outPerM: 6,
+    note: "xAI flagship · credits only · <200k context rate",
     tier: "premium",
   },
 ] as const;
 
+// Free council + premium council. Order matters for the client's chip row.
+export const ALL_MODELS: readonly ModelSpec[] = [...MODEL_REGISTRY, ...PREMIUM_MODELS];
+
 export function getModel(id: string): ModelSpec | undefined {
-  return MODEL_REGISTRY.find(m => m.id === id);
+  return ALL_MODELS.find(m => m.id === id);
 }
 
 // ── Receipt ──────────────────────────────────────────────────────────────

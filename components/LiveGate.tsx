@@ -12,6 +12,7 @@ import { fmtUsd } from "@/lib/pricing";
 interface ModelInfo {
   id: string; name: string; family: string; color: string;
   inPerM: number; outPerM: number; note: string;
+  tier?: string; // "free" | "premium" — premium is credits-only, enforced server-side
 }
 interface Quota { used: number; limit: number; resetsAtUtc: string; }
 interface Stage { label: string; detail: string; ms: number; }
@@ -1000,15 +1001,23 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
           ))}
           {models.map(m => {
             const active = !routerMode && modelId === m.id;
+            const premium = m.tier === "premium";
+            const locked = premium && !creditsActive;
             return (
-              <button key={m.id} onClick={() => { setModelId(m.id); setRouterMode(null); }} style={{
+              <button key={m.id} onClick={() => { setModelId(m.id); setRouterMode(null); }}
+                title={premium
+                  ? `${m.name} — premium, credits only. ${locked
+                      ? "Add credits to unlock it; the free council stays free."
+                      : "Paid from your credits at exact cost-plus, receipted like everything else."}`
+                  : `${m.name} — free council.`}
+                style={{
                 fontFamily: "monospace", fontSize: 8, letterSpacing: "0.08em", cursor: "pointer",
                 padding: "4px 8px", background: active ? `${m.color}18` : "rgba(4,3,10,0.8)",
-                border: `1px solid ${active ? m.color : "rgba(255,255,255,0.12)"}`,
+                border: `1px solid ${active ? m.color : premium ? "rgba(200,148,26,0.35)" : "rgba(255,255,255,0.12)"}`,
                 color: active ? m.color : "rgba(255,255,255,0.45)",
-                opacity: routerMode ? 0.55 : 1,
+                opacity: routerMode ? 0.55 : locked ? 0.5 : 1,
               }}>
-                {m.name.toUpperCase()}
+                {premium ? "💳 " : ""}{m.name.toUpperCase()}
                 <span style={{ opacity: 0.55 }}> · {m.family} · ${m.inPerM.toFixed(2)}/${m.outPerM.toFixed(2)} per M</span>
               </button>
             );
