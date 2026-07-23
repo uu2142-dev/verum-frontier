@@ -42,7 +42,8 @@ interface Exchange {
   id: number;
   query: string;
   response: string;
-  modelId: string;
+  modelId: string;         // the model that ACTUALLY answered
+  requestedModelId?: string; // what the user picked — differs when GROUND IT overrides
   receipt: Receipt;
   bias: BiasResult | null;
   memoryRecall?: MemoryRecallInfo | null;
@@ -117,6 +118,10 @@ function buildSessionPayload(startedAt: string, exchanges: Exchange[], chainRoot
       query: ex.query,
       response: ex.response,
       model: ex.modelId,
+      // Provenance: which model you PICKED vs which one answered. GROUND IT
+      // overrides to Gemini, and a sealed record must never hide a substitution.
+      requestedModel: ex.requestedModelId ?? ex.modelId,
+      modelOverridden: !!(ex.requestedModelId && ex.requestedModelId !== ex.modelId),
       receipt: ex.receipt,
       biasScreen: ex.bias,
       grounded: ex.grounded ?? false,
@@ -451,7 +456,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
   const [buying, setBuying] = useState(false);
   const [claimNote, setClaimNote] = useState<string | null>(null);
   const [routerMode, setRouterMode] = useState<RouterMode>(null);
-  const [ground, setGround] = useState<{ available: boolean; via: string; surchargeUsd: number }>({ available: false, via: "", surchargeUsd: 0 });
+  const [ground, setGround] = useState<{ available: boolean; via: string; surchargeUsd: number; modelId?: string }>({ available: false, via: "", surchargeUsd: 0 });
   const [groundOn, setGroundOn] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachment, setAttachment] = useState<{ name: string; text: string } | null>(null);
@@ -643,6 +648,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
         query: q,
         response: data.text,
         modelId: data.modelId,
+        requestedModelId: data.requestedModelId ?? data.modelId,
         receipt: data.receipt,
         bias: data.bias ?? null,
         memoryRecall: data.memoryRecall ?? null,
@@ -1023,6 +1029,24 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
             );
           })}
         </div>
+
+        {/* GROUND IT override warning. A silent model substitution is exactly
+            what a provenance product must never do — if your pick is about to be
+            overridden, you should know BEFORE you spend, not after. */}
+        {groundOn && ground.modelId && modelId !== ground.modelId && (
+          <div style={{
+            border: "1px solid rgba(200,148,26,0.5)", background: "rgba(200,148,26,0.08)",
+            padding: "6px 10px", marginBottom: 8, fontFamily: "monospace", fontSize: 9,
+            color: "#c8941a", lineHeight: 1.7,
+          }}>
+            ⚠ GROUND IT is ON — only Gemini can ground, so this answer will come from{" "}
+            <strong>{models.find(m => m.id === ground.modelId)?.name ?? ground.modelId}</strong>
+            {", not "}
+            <strong>{model?.name ?? modelId}</strong>
+            {". Both your pick and the answering model are recorded in the sealed download. "}
+            Turn GROUND IT off to use {model?.name ?? "your selected model"}.
+          </div>
+        )}
 
         {/* attach panel */}
         {attachOpen && !attachment && (

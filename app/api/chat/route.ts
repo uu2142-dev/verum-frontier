@@ -475,6 +475,7 @@ export async function GET(req: Request) {
     grounding: {
       available: !!process.env.GEMINI_API_KEY,
       via: "Gemini 2.5 Flash + Google Search",
+      modelId: GROUNDING_MODEL_ID, // client warns when this would override a pick
       surchargeUsd: GROUNDING_COST_USD,
     },
     sealKey: k
