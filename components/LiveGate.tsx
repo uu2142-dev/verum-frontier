@@ -95,6 +95,60 @@ function routeQuery(q: string, mode: "save" | "best", models: ModelInfo[]): { mo
 // on a server — there is still no database behind this site.
 const STORE_KEY = "vf_session_v1";
 
+// Completed + in-progress sessions are archived here (keyed by startedAt,
+// FIFO-capped) so a session you forgot to download is never lost — the Sealed
+// Memories tab re-downloads from this. Same browser-only, no-server rule.
+const ARCHIVE_KEY = "vf_archive_v1";
+const ARCHIVE_CAP = 60;
+
+type SealKeyInfo = { alg: string; keyId: string; publicKeySpkiB64: string; signedPayloadFormat: string } | null;
+
+// Single source of truth for the sealed-session export shape, shared by the
+// live download AND the archive/re-download — so a re-download is byte-identical
+// to a live export (same seals, receipts, sources, verify instructions).
+function buildSessionPayload(startedAt: string, exchanges: Exchange[], chainRoot: string, sealKey: SealKeyInfo) {
+  return {
+    format: "verum-frontier-sealed-session/v1",
+    site: "rabbitholeai.ai",
+    startedAt,
+    exportedAt: new Date().toISOString(),
+    exchanges: exchanges.map(ex => ({
+      query: ex.query,
+      response: ex.response,
+      model: ex.modelId,
+      receipt: ex.receipt,
+      biasScreen: ex.bias,
+      grounded: ex.grounded ?? false,
+      grounding: ex.grounding ?? null,
+      seal: ex.seal,
+      timingMs: ex.timingMs,
+      sessionChainHash: ex.chainHash,
+    })),
+    sessionChainRoot: chainRoot,
+    sealPublicKey: sealKey,
+    verify:
+      "Leaves are SHA-256 hex digests produced server-side over the exchange " +
+      "(see seal.leaves labels). The Merkle root pairs leaves left-to-right, " +
+      "duplicating the last when odd, hashing hex-string concatenations. The session " +
+      "chain is SHA-256(prevChainHash + seal.root), genesis = " +
+      "SHA-256('VERUM_FRONTIER_SESSION_GENESIS' + startedAt). Any SHA-256 tool can re-verify. " +
+      "Where seal.sig is present, it is an Ed25519 signature over " +
+      "'VF-SEAL-v1|<root>|<sealedAt>' by sealPublicKey — proving the exchange " +
+      "was sealed by rabbitholeai.ai and not altered since.",
+  };
+}
+
+function archiveSession(payload: ReturnType<typeof buildSessionPayload>) {
+  try {
+    const raw = localStorage.getItem(ARCHIVE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    const arr: ReturnType<typeof buildSessionPayload>[] = Array.isArray(parsed?.sessions) ? parsed.sessions : [];
+    const idx = arr.findIndex(s => s.startedAt === payload.startedAt);
+    if (idx >= 0) arr[idx] = payload; else arr.push(payload);
+    localStorage.setItem(ARCHIVE_KEY, JSON.stringify({ format: 1, sessions: arr.slice(-ARCHIVE_CAP) }));
+  } catch { /* storage full or serialize issue — non-fatal, session still downloadable live */ }
+}
+
 // Prepaid credits wallet — credentials live only in this browser. The wallet
 // token is issued exactly once at claim time; losing it means losing the
 // wallet (by design: we hold balances, never identities).
@@ -378,7 +432,7 @@ function SealView({ ex }: { ex: Exchange }) {
 
 // ── Main ─────────────────────────────────────────────────────────────────
 
-export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () => void }) {
+export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallbackToDemo?: () => void; onOpenMemories?: () => void }) {
   const [models, setModels]     = useState<ModelInfo[]>([]);
   const [bootFailed, setBootFailed] = useState(false);
   const [modelId, setModelId]   = useState<string>("");
@@ -389,7 +443,6 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
   const [error, setError]       = useState<string | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [memCount, setMemCount] = useState(0);
-  const [confirmForget, setConfirmForget] = useState(false);
   const [sealKey, setSealKey] = useState<{ alg: string; keyId: string; publicKeySpkiB64: string; signedPayloadFormat: string } | null>(null);
   const [payments, setPayments] = useState<{ enabled: boolean; testMode: boolean }>({ enabled: false, testMode: false });
   const [wallet, setWallet] = useState<WalletState | null>(null);
@@ -640,42 +693,21 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
   }, [input, sending, modelId, thread, wallet, models, routerMode, attachment, attachPinned, groundOn]);
 
   const downloadSession = useCallback(() => {
-    const payload = {
-      format: "verum-frontier-sealed-session/v1",
-      site: "rabbitholeai.ai",
-      startedAt: startedRef.current,
-      exportedAt: new Date().toISOString(),
-      exchanges: thread.map(ex => ({
-        query: ex.query,
-        response: ex.response,
-        model: ex.modelId,
-        receipt: ex.receipt,
-        biasScreen: ex.bias,
-        grounded: ex.grounded ?? false,
-        grounding: ex.grounding ?? null,
-        seal: ex.seal,
-        timingMs: ex.timingMs,
-        sessionChainHash: ex.chainHash,
-      })),
-      sessionChainRoot: chainRef.current,
-      sealPublicKey: sealKey,
-      verify:
-        "Leaves are SHA-256 hex digests produced server-side over the exchange " +
-        "(see seal.leaves labels). The Merkle root pairs leaves left-to-right, " +
-        "duplicating the last when odd, hashing hex-string concatenations. The session " +
-        "chain is SHA-256(prevChainHash + seal.root), genesis = " +
-        "SHA-256('VERUM_FRONTIER_SESSION_GENESIS' + startedAt). Any SHA-256 tool can re-verify. " +
-        "Where seal.sig is present, it is an Ed25519 signature over " +
-        "'VF-SEAL-v1|<root>|<sealedAt>' by sealPublicKey — proving the exchange " +
-        "was sealed by rabbitholeai.ai and not altered since.",
-    };
+    const payload = buildSessionPayload(startedRef.current, thread, chainRef.current, sealKey);
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `verum-session-${startedRef.current.slice(0, 19).replace(/[:T]/g, "-")}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
-  }, [thread]);
+  }, [thread, sealKey]);
+
+  // Auto-archive the current session so it's re-downloadable from the Sealed
+  // Memories tab even if the user forgets to download before NEW SESSION.
+  useEffect(() => {
+    if (!thread.length || !startedRef.current) return;
+    archiveSession(buildSessionPayload(startedRef.current, thread, chainRef.current, sealKey));
+  }, [thread, sealKey]);
 
   const last = thread[thread.length - 1];
 
@@ -705,27 +737,17 @@ export default function LiveGate({ onFallbackToDemo }: { onFallbackToDemo?: () =
                 {payments.testMode ? " · TEST" : ""} {buyOpen ? "▲" : "▼"}
               </button>
             )}
-            {memCount > 0 && (
+            {onOpenMemories && (
               <button
-                onClick={() => {
-                  if (!confirmForget) {
-                    setConfirmForget(true);
-                    setTimeout(() => setConfirmForget(false), 3000);
-                    return;
-                  }
-                  try { localStorage.removeItem(MEMORY_KEY); } catch { /* ignore */ }
-                  setMemCount(0);
-                  setConfirmForget(false);
-                }}
-                title="Long-term memory lives only in this browser. Forgetting is permanent."
+                onClick={onOpenMemories}
+                title="Open your sealed-memory vault — re-download any past session. Forgetting lives there now, behind a permanent-delete warning, so it can't be hit by accident."
                 style={{
                   fontSize: 8, fontFamily: "monospace", letterSpacing: "0.15em", cursor: "pointer",
-                  border: `1px solid ${confirmForget ? "rgba(231,76,60,0.6)" : "rgba(255,255,255,0.15)"}`,
-                  background: confirmForget ? "rgba(231,76,60,0.1)" : "transparent",
-                  color: confirmForget ? "#e74c3c" : "rgba(255,255,255,0.45)", padding: "3px 8px",
+                  border: "1px solid rgba(179,157,219,0.4)", background: "rgba(179,157,219,0.08)",
+                  color: "#b39ddb", padding: "3px 8px",
                 }}
               >
-                {confirmForget ? "⚠ CLICK AGAIN TO FORGET ALL" : `🧠 ${memCount} SEALED ${memCount === 1 ? "MEMORY" : "MEMORIES"} · FORGET`}
+                🧠 {memCount > 0 ? `${memCount} SEALED · ` : ""}MEMORIES ›
               </button>
             )}
             {thread.length > 0 && (

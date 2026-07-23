@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import LiveGate from "@/components/LiveGate";
+import SealedMemories from "@/components/SealedMemories";
 
 // ── RHAI/ALICE Math (mirrors Python stack exactly) ────────────────────────
 
@@ -218,10 +219,20 @@ function MerkleView({ data }: { data: { leaves: string[]; root: string } | null 
   );
 }
 
+// Top-level tabs. Live Gate (real), Sealed Memories (browser-local vault),
+// Sim Demo (the cinematic calibration concept). Keeping the demo for now —
+// it has brand value; adding a tab is reversible, deleting it isn't.
+const MODE_META = {
+  live:     { label: "LIVE GATE",       accent: "#2ecc71", bg: "rgba(46,204,113,0.1)",  dot: "● " },
+  memories: { label: "SEALED MEMORIES", accent: "#b39ddb", bg: "rgba(179,157,219,0.12)", dot: "" },
+  demo:     { label: "SIM DEMO",        accent: "#c8941a", bg: "rgba(200,148,26,0.1)",  dot: "" },
+} as const;
+type Mode = keyof typeof MODE_META;
+
 // ── Main ──────────────────────────────────────────────────────────────────
 
 export default function VerumFrontier() {
-  const [mode,         setMode]         = useState<"live" | "demo">("live");
+  const [mode,         setMode]         = useState<Mode>("live");
   const [activeModel,  setActiveModel]  = useState<Model | null>(null);
   const [hoveredModel, setHoveredModel] = useState<Model | null>(null);
   const [running,      setRunning]      = useState(false);
@@ -329,7 +340,7 @@ export default function VerumFrontier() {
           only — mobile gets pure black for maximum readability). DEMO keeps
           the full cinematic art (that experience is built around the image). */}
       <div className="absolute inset-0 z-0 bg-black">
-        {mode === "live" ? (
+        {mode !== "demo" ? (
           <div className="absolute inset-0 max-md:hidden" style={{
             backgroundImage: "url(/rhai-logo.png)",
             backgroundRepeat: "no-repeat",
@@ -371,33 +382,42 @@ export default function VerumFrontier() {
 
         {/* Mode toggle */}
         <div className="flex items-center gap-0 font-mono">
-          {([["live", "LIVE GATE"], ["demo", "SIM DEMO"]] as const).map(([m, label]) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className="uppercase"
-              style={{
-                fontSize: 8, letterSpacing: "0.2em", padding: "5px 12px", cursor: "pointer",
-                border: `1px solid ${mode === m ? (m === "live" ? "#2ecc71" : "#c8941a") : "rgba(255,255,255,0.12)"}`,
-                background: mode === m ? (m === "live" ? "rgba(46,204,113,0.1)" : "rgba(200,148,26,0.1)") : "transparent",
-                color: mode === m ? (m === "live" ? "#2ecc71" : "#c8941a") : "rgba(255,255,255,0.35)",
-              }}
-            >
-              {m === "live" ? "● " : ""}{label}
-            </button>
-          ))}
+          {(["live", "memories", "demo"] as const).map(m => {
+            const meta = MODE_META[m];
+            const on = mode === m;
+            return (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className="uppercase"
+                style={{
+                  fontSize: 8, letterSpacing: "0.2em", padding: "5px 12px", cursor: "pointer",
+                  border: `1px solid ${on ? meta.accent : "rgba(255,255,255,0.12)"}`,
+                  background: on ? meta.bg : "transparent",
+                  color: on ? meta.accent : "rgba(255,255,255,0.35)",
+                }}
+              >
+                {meta.dot}{meta.label}
+              </button>
+            );
+          })}
         </div>
 
         <div className="hidden md:block text-[9px] text-zinc-500 tracking-widest uppercase font-mono">
           {clock}
         </div>
         <div className="hidden lg:block text-[8px] text-zinc-600 tracking-wider uppercase">
-          {mode === "live" ? "LIVE COUNCIL · RECEIPTS + SEALS REAL" : "SIMULATED CALIBRATION DEMO"}
+          {mode === "live" ? "LIVE COUNCIL · RECEIPTS + SEALS REAL"
+            : mode === "memories" ? "SEALED VAULT · BROWSER-LOCAL · RE-DOWNLOADABLE"
+            : "SIMULATED CALIBRATION DEMO"}
         </div>
       </header>
 
       {/* ── LIVE GATE MODE ────────────────────────────────────────────── */}
-      {mode === "live" && <LiveGate onFallbackToDemo={() => setMode("demo")} />}
+      {mode === "live" && <LiveGate onFallbackToDemo={() => setMode("demo")} onOpenMemories={() => setMode("memories")} />}
+
+      {/* ── SEALED MEMORIES (VAULT) ───────────────────────────────────── */}
+      {mode === "memories" && <SealedMemories onBack={() => setMode("live")} />}
 
       {/* ── HOTSPOTS (SIM DEMO) ───────────────────────────────────────── */}
       {mode === "demo" && (

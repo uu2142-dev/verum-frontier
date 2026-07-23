@@ -21,7 +21,13 @@ export const PRICE_SHEET_DATE = "2026-07-14";
 // retrieve-and-cite; the receipt shows it so nothing hides.
 export const GROUNDING_COST_USD = 0.035;
 
-export type Provider = "groq" | "google";
+export type Provider = "groq" | "google" | "anthropic";
+
+// "free"    → eligible for the daily free tier (the current open-weight council)
+// "premium" → credits-only; too expensive to give away, gated behind a funded
+//             wallet. Premium models never appear until their provider key is
+//             configured AND an adapter exists (see PREMIUM_MODELS_PENDING).
+export type ModelTier = "free" | "premium";
 
 export interface ModelSpec {
   id: string;            // our stable id used by the client
@@ -33,6 +39,7 @@ export interface ModelSpec {
   inPerM: number;        // USD per 1M input tokens
   outPerM: number;       // USD per 1M output tokens
   note: string;
+  tier?: ModelTier;      // undefined = "free"
 }
 
 export const MODEL_REGISTRY: readonly ModelSpec[] = [
@@ -81,6 +88,102 @@ export const MODEL_REGISTRY: readonly ModelSpec[] = [
     inPerM: 0.30,
     outPerM: 2.50,
     note: "Google AI Studio API",
+  },
+] as const;
+
+// ── PREMIUM TIER (pending go-live) ───────────────────────────────────────
+// Real Anthropic prices, pinned 2026-07-23 from the PRIMARY source
+// (platform.claude.com/docs → Pricing · Model pricing table). USD per 1M
+// tokens, standard on-demand rates. These are NOT invented — unlike the
+// specs a certain ungrounded model volunteered, every number here traces to
+// the provider's own page, the same discipline as GROUNDING_COST_USD.
+//
+// NOT yet merged into MODEL_REGISTRY: the boot must not advertise a model the
+// gate can't call. Go-live checklist (each a real, verifiable step):
+//   1. Add ANTHROPIC_API_KEY to Vercel env.
+//   2. Add a callAnthropic() adapter in app/api/chat/route.ts (Messages API:
+//      POST /v1/messages, headers x-api-key + anthropic-version, body
+//      { model, max_tokens, system, messages }; usage.input_tokens /
+//      usage.output_tokens; stop_reason === "max_tokens" ⇒ truncated).
+//   3. Env-gate: only surface these when process.env.ANTHROPIC_API_KEY is set
+//      (same pattern as grounding availability).
+//   4. Enforce tier === "premium" ⇒ credits-only (no free-tier debit).
+//   5. Verify a real Opus 4.8 call returns sealed, on the FIRST live call —
+//      do not trust the adapter until a genuine round-trip is receipted.
+//
+// Adapter gotchas (verified against Anthropic's own API reference — these are
+// 400s, not style notes, and callGemini's current shape would trip two of them):
+//   • NO temperature / top_p / top_k. Removed on Opus 4.8, Sonnet 5, Fable 5 —
+//     sending any of them returns 400. Steer with the prompt instead.
+//   • Thinking is per-model: Opus 4.8 runs WITHOUT thinking unless you send
+//     thinking:{type:"adaptive"} explicitly; Sonnet 5 runs adaptive by default;
+//     Fable 5 is always-on and REJECTS any thinking config (omit the field).
+//     The old {type:"enabled",budget_tokens:N} is gone everywhere — 400.
+//   • Depth is output_config:{effort:"low|medium|high|xhigh|max"}, not tokens.
+//   • Fable 5 also: requires 30-day data retention (400 under ZDR), and can
+//     return HTTP 200 with stop_reason:"refusal" — check stop_reason BEFORE
+//     reading content[0], or the gate throws on a refusal.
+//   • Stream anything over ~16k max_tokens or the request hits HTTP timeout.
+//
+// Grounding a Claude tier later: Anthropic's native web search is a server tool
+// (web_search_20260209 on Opus 4.8 / Sonnet 5) at $10/1,000 searches = $0.01 per
+// search — CHEAPER than Gemini's $0.035. Worth its own pinned constant then.
+//
+// Tokenizer note: Opus 4.7+, Fable 5, Sonnet 5 use a newer tokenizer that
+// yields ~30% more tokens for the same text. The receipt counts REAL returned
+// tokens, so it stays honest automatically — the higher counts are expected,
+// not a bug.
+//
+// Sonnet 5 carries introductory pricing ($2/$10) through 2026-08-31; it steps
+// to $3/$15 on 2026-09-01. Re-verify and re-pin then (bump PRICE_SHEET_DATE).
+export const PREMIUM_MODELS_PENDING: readonly ModelSpec[] = [
+  {
+    id: "claude-opus-4.8",
+    providerModel: "claude-opus-4-8",
+    provider: "anthropic",
+    name: "Claude Opus 4.8",
+    family: "Anthropic",
+    color: "#d97757",
+    inPerM: 5,
+    outPerM: 25,
+    note: "Frontier reasoning · credits only · native web-search grounding $0.01/search",
+    tier: "premium",
+  },
+  {
+    id: "claude-sonnet-5",
+    providerModel: "claude-sonnet-5",
+    provider: "anthropic",
+    name: "Claude Sonnet 5",
+    family: "Anthropic",
+    color: "#c98fb1",
+    inPerM: 2,   // introductory thru 2026-08-31; → $3 on 2026-09-01
+    outPerM: 10, // introductory thru 2026-08-31; → $15 on 2026-09-01
+    note: "Balanced flagship · credits only · intro pricing thru Aug 31 2026",
+    tier: "premium",
+  },
+  {
+    id: "claude-haiku-4.5",
+    providerModel: "claude-haiku-4-5",
+    provider: "anthropic",
+    name: "Claude Haiku 4.5",
+    family: "Anthropic",
+    color: "#8fc9b1",
+    inPerM: 1,
+    outPerM: 5,
+    note: "Fast + inexpensive premium · credits only",
+    tier: "premium",
+  },
+  {
+    id: "claude-fable-5",
+    providerModel: "claude-fable-5",
+    provider: "anthropic",
+    name: "Claude Fable 5",
+    family: "Anthropic",
+    color: "#c8a96e",
+    inPerM: 10,
+    outPerM: 50,
+    note: "Premium creative · credits only",
+    tier: "premium",
   },
 ] as const;
 
