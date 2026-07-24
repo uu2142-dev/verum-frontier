@@ -44,7 +44,6 @@ const MAX_OUTPUT_TOKENS_FREE = 1024;
 const MAX_OUTPUT_TOKENS_PAID = 4096; // paying customers get room; cost-plus bills it honestly
 const MAX_ATTACH_CHARS = 24_000; // attached text rides ONE turn; its cost shows on the receipt
 const GROUNDING_MODEL_ID = "gemini-2.5-flash"; // only Gemini has built-in Google Search grounding
-const XAI_MAX_SEARCH_RESULTS = 15; // cap xAI Live Search sources to bound per-source cost ($0.005 each)
 
 // Models must know WHO they are: the gate lets users switch models
 // mid-conversation ("same question for Gemini"), so each model is told its
@@ -498,19 +497,12 @@ async function callOpenAICompatible(
     messages: [{ role: "system", content: sys }, ...messages],
     max_completion_tokens: maxTokens,
   };
-  // xAI Live Search on Chat Completions — CONFIRMED shape from docs.x.ai API
-  // reference: a top-level `search_parameters` object (NOT the Responses-API
-  // `tools:[{type:web_search}]` that the field test proved does nothing here).
-  // mode "on" because the user explicitly toggled GROUND IT; results capped to
-  // bound cost. Billed PER SOURCE via usage.num_sources_used (parsed below) at
-  // $0.005/source. OpenAI never reaches here grounded — it uses the Responses path.
-  if (grounded && spec.provider === "xai") {
-    reqBody.search_parameters = {
-      mode: "on",
-      return_citations: true,
-      max_search_results: XAI_MAX_SEARCH_RESULTS,
-    };
-  }
+  // No search on this endpoint for ANY provider now. Field-tested twice on xAI:
+  // tools:[{type:web_search}] was silently ignored, then search_parameters
+  // returned 410 "Live search is deprecated. Please switch to the Agent Tools
+  // API" — which is the Responses surface. Grounded OpenAI AND grounded xAI
+  // both go through callOpenAIResponses; this adapter is ungrounded-only.
+  void grounded;
 
   const res = await fetch(cfg.url, {
     method: "POST",
@@ -568,18 +560,16 @@ async function callOpenAICompatible(
   };
 }
 
-// OpenAI RESPONSES API — the endpoint where gpt-5.6-sol can search natively.
-// Different shape from Chat Completions: `instructions` for the system prompt,
-// `input` for the conversation, `max_output_tokens`, and web search is a real
-// server tool ({type:"web_search"}). Used ONLY for grounded OpenAI calls; the
-// ungrounded path stays on the proven Chat Completions adapter. Web search bills
-// $10/1k calls, counted from the web_search_call items the model actually ran.
-//
-// NOT YET LIVE-VERIFIED: the field names below (output items, output_text,
-// url_citation annotations, usage.input_tokens, status:"incomplete") follow the
-// documented Responses shape but no real round-trip has confirmed them here —
-// the first grounded GPT query is the verification. Parsing is defensive so a
-// shape mismatch yields empty sources + an honest label, never a crash.
+// RESPONSES API — where gpt-5.6-sol AND grok-4.5 search natively. OpenAI's
+// shape (`instructions` + `input` + `max_output_tokens`, web_search server
+// tool) — VERIFIED LIVE for OpenAI (12 searches, receipt matched). xAI's Agent
+// Tools API is the same surface at api.x.ai/v1/responses (their 410 on the old
+// search_parameters points here); xAI additionally returns a top-level
+// `citations` array, parsed as a fallback. Used ONLY for grounded calls; the
+// ungrounded path stays on the proven Chat Completions adapter. Search bills
+// per CALL at the provider's pinned rate, counted from web_search_call items.
+// Parsing stays defensive: a shape mismatch yields empty sources + an honest
+// label, never a crash.
 async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number, grounded: boolean) {
   const base = systemPrompt(spec) + (grounded
     ? "\n\nYou have a web search tool. Search before answering when the question " +
@@ -594,10 +584,13 @@ async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], mem
   };
   if (grounded) body.tools = [{ type: "web_search" }];
 
-  const res = await fetch("https://api.openai.com/v1/responses", {
+  const cfg = spec.provider === "xai"
+    ? { url: "https://api.x.ai/v1/responses", key: process.env.XAI_API_KEY, label: "xAI (responses)" }
+    : { url: "https://api.openai.com/v1/responses", key: process.env.OPENAI_API_KEY, label: "OpenAI (responses)" };
+  const res = await fetch(cfg.url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ""}`,
+      Authorization: `Bearer ${cfg.key ?? ""}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
@@ -605,7 +598,7 @@ async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], mem
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    throw new Error(`OpenAI (responses) ${res.status}: ${detail.slice(0, 300)}`);
+    throw new Error(`${cfg.label} ${res.status}: ${detail.slice(0, 300)}`);
   }
   const data = await res.json();
 
@@ -627,6 +620,22 @@ async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], mem
   // Convenience field on some responses; fall back to it only if item-walk found nothing.
   if (!text && typeof data.output_text === "string") text = data.output_text;
   text = text.trim();
+
+  // xAI fallback: its Agent Tools API "automatically returns source URLs" in a
+  // top-level `citations` array (strings or {url,title}); merge any not already
+  // captured from annotations.
+  if (Array.isArray(data.citations)) {
+    for (const c of data.citations as unknown[]) {
+      const url = typeof c === "string" ? c : (c as { url?: string })?.url;
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      const title = typeof c === "string" ? "" : (c as { title?: string })?.title;
+      sources.push({ title: title || url, uri: url });
+    }
+  }
+  // If sources prove a search happened but no web_search_call item was counted
+  // (shape drift), bill a floor of ONE call rather than zero or a guess.
+  if (searchRequests === 0 && sources.length > 0) searchRequests = 1;
 
   const usage: Usage = {
     inputTokens: data.usage?.input_tokens ?? 0,
@@ -872,10 +881,14 @@ export async function POST(req: Request) {
         grounding = { sources: out.sources, searchQueries: [] };
       }
     } else if (callSpec.provider === "xai") {
-      // xAI grounds natively via search_parameters on this same endpoint.
-      const out = await callOpenAICompatible(callSpec, providerMessages, memoryContext, outputCap, groundingRequested);
+      // xAI grounds via its Agent Tools API (Responses surface) — the old
+      // Chat-Completions Live Search is 410-dead. Ungrounded stays on the
+      // proven Chat Completions path.
+      const out = groundingRequested
+        ? await callOpenAIResponses(callSpec, providerMessages, memoryContext, outputCap, true)
+        : await callOpenAICompatible(callSpec, providerMessages, memoryContext, outputCap);
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
-      searchRequests = out.searchRequests; // xAI: usage.num_sources_used (per-source)
+      searchRequests = out.searchRequests;
       if (groundingRequested && out.sources.length) {
         grounding = { sources: out.sources, searchQueries: [] };
       }
