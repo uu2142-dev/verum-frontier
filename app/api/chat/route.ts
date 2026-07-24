@@ -25,7 +25,17 @@ import { debitWallet, walletBalance } from "@/lib/ledger";
 import { stripeConfigured, stripeTestMode } from "@/lib/stripe";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+// Vercel Hobby's real function ceiling is 300s with fluid compute (default),
+// NOT 60s — the earlier Fable-5 timeout was this cap set too low, not the plan.
+// Grounded premium (deep reasoning + multi-search) needs the headroom; grounded
+// Opus already measured ~46s. Raise to Pro's 800s only if a single answer ever
+// needs to run longer than 5 minutes (none currently do).
+export const maxDuration = 300;
+
+// One provider-call timeout, comfortably under maxDuration so a slow grounded
+// answer completes but a hung provider still frees the function with room to
+// spare for the bias screen, seal, and debit that run after it.
+const PROVIDER_TIMEOUT_MS = 250_000;
 
 const MAX_INPUT_CHARS = 4000;
 const MAX_HISTORY_CHARS = 12000;
@@ -224,7 +234,7 @@ async function callGroq(spec: ModelSpec, messages: ChatMessage[], memoryContext:
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(55_000),
+    signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
@@ -266,7 +276,7 @@ async function callGemini(spec: ModelSpec, messages: ChatMessage[], memoryContex
           thinkingConfig: { thinkingBudget: 0 },
         },
       }),
-      signal: AbortSignal.timeout(55_000),
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
     },
   );
   if (!res.ok) {
@@ -314,7 +324,7 @@ async function callGeminiGrounded(spec: ModelSpec, messages: ChatMessage[], memo
         tools: [{ google_search: {} }],
         generationConfig: { maxOutputTokens: maxTokens, temperature: 0.4 },
       }),
-      signal: AbortSignal.timeout(55_000),
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
     },
   );
   if (!res.ok) {
@@ -412,7 +422,7 @@ async function callAnthropic(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(55_000),
+    signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
@@ -503,7 +513,7 @@ async function callOpenAICompatible(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(reqBody),
-    signal: AbortSignal.timeout(55_000),
+    signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
@@ -552,6 +562,74 @@ async function callOpenAICompatible(
   };
 }
 
+// OpenAI RESPONSES API — the endpoint where gpt-5.6-sol can search natively.
+// Different shape from Chat Completions: `instructions` for the system prompt,
+// `input` for the conversation, `max_output_tokens`, and web search is a real
+// server tool ({type:"web_search"}). Used ONLY for grounded OpenAI calls; the
+// ungrounded path stays on the proven Chat Completions adapter. Web search bills
+// $10/1k calls, counted from the web_search_call items the model actually ran.
+//
+// NOT YET LIVE-VERIFIED: the field names below (output items, output_text,
+// url_citation annotations, usage.input_tokens, status:"incomplete") follow the
+// documented Responses shape but no real round-trip has confirmed them here —
+// the first grounded GPT query is the verification. Parsing is defensive so a
+// shape mismatch yields empty sources + an honest label, never a crash.
+async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number, grounded: boolean) {
+  const base = systemPrompt(spec) + (grounded
+    ? "\n\nYou have a web search tool. Search before answering when the question " +
+      "turns on facts you cannot verify from training alone, and cite what you read."
+    : "");
+  const sys = memoryContext ? `${base}\n\n${memoryContext}` : base;
+  const body: Record<string, unknown> = {
+    model: spec.providerModel,
+    instructions: sys,
+    input: messages,
+    max_output_tokens: maxTokens,
+  };
+  if (grounded) body.tools = [{ type: "web_search" }];
+
+  const res = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY ?? ""}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`OpenAI (responses) ${res.status}: ${detail.slice(0, 300)}`);
+  }
+  const data = await res.json();
+
+  const items: Array<{ type?: string; content?: unknown }> = Array.isArray(data.output) ? data.output : [];
+  let text = "";
+  const sources: GroundingSource[] = [];
+  const seen = new Set<string>();
+  let searchRequests = 0;
+  for (const it of items) {
+    if (it.type === "web_search_call") { searchRequests += 1; continue; }
+    if (it.type !== "message" || !Array.isArray(it.content)) continue;
+    for (const c of it.content as Array<{ type?: string; text?: string; annotations?: Array<{ type?: string; url?: string; title?: string }> }>) {
+      if (typeof c.text === "string") text += c.text;
+      for (const a of c.annotations ?? []) {
+        if (a?.url && !seen.has(a.url)) { seen.add(a.url); sources.push({ title: a.title || a.url, uri: a.url }); }
+      }
+    }
+  }
+  // Convenience field on some responses; fall back to it only if item-walk found nothing.
+  if (!text && typeof data.output_text === "string") text = data.output_text;
+  text = text.trim();
+
+  const usage: Usage = {
+    inputTokens: data.usage?.input_tokens ?? 0,
+    outputTokens: data.usage?.output_tokens ?? 0,
+  };
+  const truncated = data.status === "incomplete";
+  return { text, usage, truncated, sources, searchRequests };
+}
+
 // ── GET: model registry + quota status (client boot) ────────────────────
 
 export async function GET(req: Request) {
@@ -568,7 +646,7 @@ export async function GET(req: Request) {
       inPerM: m.inPerM, outPerM: m.outPerM, note: m.note,
       tier: m.tier ?? "free",
       // Native retrieval: GROUND IT is additive for these, not a substitution.
-      selfGrounds: m.provider === "anthropic",
+      selfGrounds: m.provider === "anthropic" || m.provider === "openai",
     })),
     quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
     payments: { enabled: stripeConfigured(), testMode: stripeTestMode() },
@@ -659,10 +737,11 @@ export async function POST(req: Request) {
   // relay — and that substitution is warned about up front and recorded in the
   // sealed export, never silent.
   const groundingRequested = body.grounded === true;
-  // Only Anthropic self-grounds on the endpoint we already call (verified live).
-  // OpenAI needs the Responses API; xAI's Chat-Completions search param + billing
-  // are unconfirmed and the field test showed no search ran — both relay for now.
-  const selfGrounds = spec.provider === "anthropic";
+  // Self-grounding = native web search on the endpoint we call for grounding.
+  // Anthropic (Messages) verified live; OpenAI via the Responses API (this build,
+  // pending first live round-trip). xAI's Chat-Completions search param + billing
+  // are still unconfirmed, so grounded xAI relays to Gemini.
+  const selfGrounds = spec.provider === "anthropic" || spec.provider === "openai";
   const geminiSpec = getModel(GROUNDING_MODEL_ID);
   const useRelay = groundingRequested && !selfGrounds && !!geminiSpec;
   const callSpec = useRelay && geminiSpec ? geminiSpec : spec;
@@ -707,21 +786,10 @@ export async function POST(req: Request) {
       { status: 402 },
     );
   }
-  // Fable 5 + retrieval does not fit the platform's 60s function ceiling:
-  // always-on deep reasoning plus multi-search overruns it, and a timeout after
-  // 60s of thinking is a worse experience than an honest refusal up front.
-  // (Grounded Opus 4.8 measured ~46s — already close to the ceiling.)
-  if (groundingRequested && callSpec.providerModel === "claude-fable-5") {
-    return NextResponse.json(
-      {
-        error: "Claude Fable 5 can't be grounded here yet: its always-on reasoning plus web search " +
-          "overruns this deployment's 60-second limit, so the request would time out after burning " +
-          "credits. Use Claude Opus 4.8 with GROUND IT (measured ~46s), or run Fable 5 ungrounded.",
-        groundingUnsupported: true,
-      },
-      { status: 400 },
-    );
-  }
+  // (The Fable-5-grounding block was removed once maxDuration was raised to 300s
+  // — the 60s wall was our own config, not the plan. Grounded Fable 5 now runs;
+  // if a provider call still overruns 250s it returns 502 uncharged, not a
+  // silent timeout after a debit.)
   const tIntent = Date.now();
 
   // [02] MEMORY RECALL — client-recalled sealed memories, server-verified.
@@ -786,14 +854,21 @@ export async function POST(req: Request) {
       if (groundingRequested && out.sources.length) {
         grounding = { sources: out.sources, searchQueries: [] };
       }
-    } else if (callSpec.provider === "openai" || callSpec.provider === "xai") {
-      // xAI searches natively; OpenAI here never does (see selfGrounds above).
-      const out = await callOpenAICompatible(callSpec, providerMessages, memoryContext, outputCap, groundingRequested);
+    } else if (callSpec.provider === "openai") {
+      // OpenAI grounds only on the Responses API; the proven Chat Completions
+      // path handles the ungrounded case unchanged.
+      const out = groundingRequested
+        ? await callOpenAIResponses(callSpec, providerMessages, memoryContext, outputCap, true)
+        : await callOpenAICompatible(callSpec, providerMessages, memoryContext, outputCap);
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
       searchRequests = out.searchRequests;
       if (groundingRequested && out.sources.length) {
         grounding = { sources: out.sources, searchQueries: [] };
       }
+    } else if (callSpec.provider === "xai") {
+      // xAI never grounds here — grounded xAI relays to Gemini (handled above).
+      const out = await callOpenAICompatible(callSpec, providerMessages, memoryContext, outputCap);
+      text = out.text; usage = out.usage; truncated = out.truncated ?? false;
     } else {
       const out = callSpec.provider === "groq"
         ? await callGroq(callSpec, providerMessages, memoryContext, outputCap)
