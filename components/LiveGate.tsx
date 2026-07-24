@@ -21,8 +21,10 @@ interface Leaf { label: string; sha256: string; }
 interface Receipt {
   priceSheetDate: string; model: string;
   rates: { inPerM: number; outPerM: number };
-  usage: { inputTokens: number; outputTokens: number };
-  directUsd: number; groundingUsd?: number; searchRequests?: number; searchUnitUsd?: number;
+  usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+  directUsd: number;
+  uncachedInputTokens?: number; cachedInputTokens?: number; cacheRatePerM?: number;
+  groundingUsd?: number; searchRequests?: number; searchUnitUsd?: number;
   infraUsd: number; supportUsd: number;
   supportSplit: { server: number; development: number; steward: number; reserve: number };
   totalUsd: number; chargedUsd: number; tier: string;
@@ -299,7 +301,14 @@ function ReceiptCard({ r, color }: { r: Receipt; color: string }) {
         COST-PLUS RECEIPT · PRICE SHEET {r.priceSheetDate}
       </div>
       <Row k="DIRECT API COST" v={fmtUsd(r.directUsd)} strong color={color} />
-      <Sub k={`${r.usage.inputTokens.toLocaleString()} in × $${r.rates.inPerM.toFixed(2)}/M`} />
+      {r.cachedInputTokens && r.cachedInputTokens > 0 ? (
+        <>
+          <Sub k={`${(r.uncachedInputTokens ?? r.usage.inputTokens).toLocaleString()} in (fresh) × $${r.rates.inPerM.toFixed(2)}/M`} />
+          <Sub k={`${r.cachedInputTokens.toLocaleString()} in (cached) × $${(r.cacheRatePerM ?? r.rates.inPerM).toFixed(2)}/M — provider cache discount`} />
+        </>
+      ) : (
+        <Sub k={`${r.usage.inputTokens.toLocaleString()} in × $${r.rates.inPerM.toFixed(2)}/M`} />
+      )}
       <Sub k={`${r.usage.outputTokens.toLocaleString()} out × $${r.rates.outPerM.toFixed(2)}/M`} />
       {!!r.groundingUsd && r.groundingUsd > 0 && (
         <>

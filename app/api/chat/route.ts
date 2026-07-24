@@ -246,6 +246,7 @@ async function callGroq(spec: ModelSpec, messages: ChatMessage[], memoryContext:
   const usage: Usage = {
     inputTokens: data.usage?.prompt_tokens ?? 0,
     outputTokens: data.usage?.completion_tokens ?? 0,
+    cachedInputTokens: data.usage?.prompt_tokens_details?.cached_tokens ?? 0, // Groq: no caching → 0
   };
   return { text, usage, truncated: data.choices?.[0]?.finish_reason === "length" };
 }
@@ -290,6 +291,7 @@ async function callGemini(spec: ModelSpec, messages: ChatMessage[], memoryContex
   const usage: Usage = {
     inputTokens: um.promptTokenCount ?? 0,
     outputTokens: (um.candidatesTokenCount ?? 0) + (um.thoughtsTokenCount ?? 0),
+    cachedInputTokens: um.cachedContentTokenCount ?? 0,
   };
   return { text, usage, truncated: data.candidates?.[0]?.finishReason === "MAX_TOKENS" };
 }
@@ -338,6 +340,7 @@ async function callGeminiGrounded(spec: ModelSpec, messages: ChatMessage[], memo
   const usage: Usage = {
     inputTokens: um.promptTokenCount ?? 0,
     outputTokens: (um.candidatesTokenCount ?? 0) + (um.thoughtsTokenCount ?? 0),
+    cachedInputTokens: um.cachedContentTokenCount ?? 0,
   };
   const gm = data.candidates?.[0]?.groundingMetadata ?? {};
   const chunks: Array<{ web?: { uri?: string; title?: string } }> = gm.groundingChunks ?? [];
@@ -429,9 +432,13 @@ async function callAnthropic(
     throw new Error(`Anthropic ${res.status}: ${detail.slice(0, 300)}`);
   }
   const data = await res.json();
+  // Anthropic reports input_tokens as the UNCACHED count; cache reads are separate.
+  // We send no cache_control, so cache_read is 0 — wired for correctness anyway.
+  const cacheRead = data.usage?.cache_read_input_tokens ?? 0;
   const usage: Usage = {
-    inputTokens: data.usage?.input_tokens ?? 0,
+    inputTokens: (data.usage?.input_tokens ?? 0) + cacheRead,
     outputTokens: data.usage?.output_tokens ?? 0,
+    cachedInputTokens: cacheRead,
   };
   // A safety decline arrives as HTTP 200 with stop_reason "refusal" and empty
   // content. Check stop_reason BEFORE reading content, or the gate throws on a
@@ -520,8 +527,9 @@ async function callOpenAICompatible(
   const data = await res.json();
   const text: string = (data.choices?.[0]?.message?.content ?? "").trim();
   const usage: Usage = {
-    inputTokens: data.usage?.prompt_tokens ?? 0,
+    inputTokens: data.usage?.prompt_tokens ?? 0, // OpenAI/xAI Chat: prompt_tokens INCLUDES cached
     outputTokens: data.usage?.completion_tokens ?? 0,
+    cachedInputTokens: data.usage?.prompt_tokens_details?.cached_tokens ?? 0,
   };
 
   // xAI citations. The docs show `citations` but are not explicit about the exact
@@ -649,9 +657,14 @@ async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], mem
   // (shape drift), bill a floor of ONE call rather than zero or a guess.
   if (searchRequests === 0 && sources.length > 0) searchRequests = 1;
 
+  // Responses API: input_tokens INCLUDES cached; the cached portion is reported
+  // under input_tokens_details (OpenAI) or prompt_tokens_details (xAI compat).
+  const cachedIn = data.usage?.input_tokens_details?.cached_tokens
+    ?? data.usage?.prompt_tokens_details?.cached_tokens ?? 0;
   const usage: Usage = {
     inputTokens: data.usage?.input_tokens ?? 0,
     outputTokens: data.usage?.output_tokens ?? 0,
+    cachedInputTokens: cachedIn,
   };
   const truncated = data.status === "incomplete";
   return { text, usage, truncated, sources, searchRequests };

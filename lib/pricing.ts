@@ -60,6 +60,29 @@ export function searchUnitUsd(provider: Provider): number {
   }
 }
 
+// CACHED input tokens are billed far below the full input rate — providers cache
+// repeated context (system prompt, conversation history, recalled memories) and
+// charge cache-hits at a fraction. Billing cached tokens at the FULL rate was a
+// real overcharge, caught by reconciling a live receipt against the xAI console
+// (79.9K of 122K input tokens were cache-hits, billed at ~1/7th). This returns
+// the cache-read fraction of the input rate, per provider, each pinned from the
+// provider's own pricing page (2026-07-24):
+//   OpenAI  cached $0.50/M vs $5/M input = 0.10×
+//   xAI     cached $0.30/M vs $2/M input = 0.15×
+//   Anthropic cache-read = 0.10× (moot — we send no cache_control, so nothing
+//             caches; wired anyway for correctness if that changes)
+//   Google  Gemini context cache ≈ 0.25×
+//   Groq    no prompt caching → 1.0× (cached count is always 0 anyway)
+export function cacheMultiplier(provider: Provider): number {
+  switch (provider) {
+    case "openai":    return 0.10;
+    case "xai":       return 0.15;
+    case "anthropic": return 0.10;
+    case "google":    return 0.25;
+    default:          return 1.0; // groq — no caching
+  }
+}
+
 // "free"    → eligible for the daily free tier (the current open-weight council)
 // "premium" → credits-only; too expensive to give away, gated behind a funded
 //             wallet. Premium models never appear until their provider key is
@@ -264,8 +287,9 @@ export const SUPPORT_SPLIT = {
 } as const;
 
 export interface Usage {
-  inputTokens: number;
-  outputTokens: number;
+  inputTokens: number;       // TOTAL prompt tokens (cached + uncached)
+  outputTokens: number;      // completion tokens (includes reasoning where the provider folds it in)
+  cachedInputTokens?: number; // the cache-hit portion of inputTokens, billed at the cache rate
 }
 
 export interface Receipt {
@@ -273,7 +297,10 @@ export interface Receipt {
   model: string;
   rates: { inPerM: number; outPerM: number };
   usage: Usage;
-  directUsd: number;     // token cost (real counts × rates)
+  directUsd: number;     // token cost (real counts × rates, cached billed at cache rate)
+  uncachedInputTokens: number; // input billed at full rate
+  cachedInputTokens: number;   // input billed at the cache rate (cache-hits)
+  cacheRatePerM: number;       // the cache-read rate applied to cached tokens
   groundingUsd: number;  // retrieval surcharge (0 when ungrounded)
   searchRequests: number;  // how many real searches were billed
   searchUnitUsd: number;   // price per search for THIS provider
@@ -288,8 +315,15 @@ export interface Receipt {
 const usd = (v: number) => Number(v.toFixed(9));
 
 export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0): Receipt {
+  // Split input into cache-hits (billed cheap) and uncached (billed full), exactly
+  // as the provider does. Billing everything at the full input rate over-charged
+  // long/grounded/recall-heavy queries, where most of the context is cached.
+  const cached = Math.max(0, Math.min(usage.cachedInputTokens ?? 0, usage.inputTokens));
+  const uncached = usage.inputTokens - cached;
+  const cacheRatePerM = usd(spec.inPerM * cacheMultiplier(spec.provider));
   const direct = usd(
-    (usage.inputTokens / 1_000_000) * spec.inPerM +
+    (uncached / 1_000_000) * spec.inPerM +
+    (cached / 1_000_000) * cacheRatePerM +
     (usage.outputTokens / 1_000_000) * spec.outPerM,
   );
   // Retrieval is priced per search, and the rate depends on WHO searched:
@@ -306,6 +340,9 @@ export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0):
     rates: { inPerM: spec.inPerM, outPerM: spec.outPerM },
     usage,
     directUsd: direct,
+    uncachedInputTokens: uncached,
+    cachedInputTokens: cached,
+    cacheRatePerM,
     groundingUsd: grounding,
     searchRequests,
     searchUnitUsd: searchUnit,
