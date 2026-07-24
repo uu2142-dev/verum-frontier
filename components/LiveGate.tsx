@@ -13,6 +13,7 @@ interface ModelInfo {
   id: string; name: string; family: string; color: string;
   inPerM: number; outPerM: number; note: string;
   tier?: string; // "free" | "premium" — premium is credits-only, enforced server-side
+  selfGrounds?: boolean; // has native web search — GROUND IT adds to it, never overrides it
 }
 interface Quota { used: number; limit: number; resetsAtUtc: string; }
 interface Stage { label: string; detail: string; ms: number; }
@@ -21,7 +22,8 @@ interface Receipt {
   priceSheetDate: string; model: string;
   rates: { inPerM: number; outPerM: number };
   usage: { inputTokens: number; outputTokens: number };
-  directUsd: number; groundingUsd?: number; infraUsd: number; supportUsd: number;
+  directUsd: number; groundingUsd?: number; searchRequests?: number; searchUnitUsd?: number;
+  infraUsd: number; supportUsd: number;
   supportSplit: { server: number; development: number; steward: number; reserve: number };
   totalUsd: number; chargedUsd: number; tier: string;
 }
@@ -291,8 +293,8 @@ function ReceiptCard({ r, color }: { r: Receipt; color: string }) {
       <Sub k={`${r.usage.outputTokens.toLocaleString()} out × $${r.rates.outPerM.toFixed(2)}/M`} />
       {!!r.groundingUsd && r.groundingUsd > 0 && (
         <>
-          <Row k="GROUNDING (Google Search)" v={fmtUsd(r.groundingUsd)} color="#58a6ff" />
-          <Sub k="1 grounded search — real retrieval, real cost" />
+          <Row k="RETRIEVAL (web search)" v={fmtUsd(r.groundingUsd)} color="#58a6ff" />
+          <Sub k={`${r.searchRequests ?? 1} search${(r.searchRequests ?? 1) === 1 ? "" : "es"} × $${(r.searchUnitUsd ?? 0.035).toFixed(3)} — real retrieval, real cost`} />
         </>
       )}
       <Row k="INFRASTRUCTURE (5%)" v={fmtUsd(r.infraUsd)} />
@@ -1033,7 +1035,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
         {/* GROUND IT override warning. A silent model substitution is exactly
             what a provenance product must never do — if your pick is about to be
             overridden, you should know BEFORE you spend, not after. */}
-        {groundOn && ground.modelId && modelId !== ground.modelId && (
+        {groundOn && ground.modelId && modelId !== ground.modelId && !model?.selfGrounds && (
           <div style={{
             border: "1px solid rgba(200,148,26,0.5)", background: "rgba(200,148,26,0.08)",
             padding: "6px 10px", marginBottom: 8, fontFamily: "monospace", fontSize: 9,

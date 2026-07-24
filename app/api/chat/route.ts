@@ -19,7 +19,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { NextResponse } from "next/server";
-import { MODEL_REGISTRY, PREMIUM_MODELS, getModel, buildReceipt, GROUNDING_COST_USD, type ModelSpec, type Usage } from "@/lib/pricing";
+import { MODEL_REGISTRY, PREMIUM_MODELS, getModel, buildReceipt, GROUNDING_COST_USD, ANTHROPIC_SEARCH_COST_USD, type ModelSpec, type Usage } from "@/lib/pricing";
 import { FREE_DAILY_LIMIT, QUOTA_COOKIE, decodeQuota, encodeQuota, quotaResetIso } from "@/lib/quota";
 import { debitWallet, walletBalance } from "@/lib/ledger";
 import { stripeConfigured, stripeTestMode } from "@/lib/stripe";
@@ -366,8 +366,19 @@ function providerConfigured(p: ModelSpec["provider"]): boolean {
 // those are REMOVED on Opus 4.8 / Sonnet 5 / Fable 5 and return 400, so the
 // Gemini adapter's shape must NOT be copied here. Thinking config differs per
 // model, so it is opt-in per id rather than assumed.
-async function callAnthropic(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number) {
-  const base = systemPrompt(spec);
+async function callAnthropic(
+  spec: ModelSpec,
+  messages: ChatMessage[],
+  memoryContext: string | null,
+  maxTokens: number,
+  grounded = false,
+) {
+  const base = systemPrompt(spec) + (grounded
+    ? "\n\nYou have a web search tool. Search before answering when the question " +
+      "turns on facts you cannot verify from training alone, and cite what you " +
+      "actually read. If the sources do not settle a claim, say so plainly rather " +
+      "than filling the gap."
+    : "");
   const sys = memoryContext ? `${base}\n\n${memoryContext}` : base;
   const body: Record<string, unknown> = {
     model: spec.providerModel,
@@ -375,6 +386,18 @@ async function callAnthropic(spec: ModelSpec, messages: ChatMessage[], memoryCon
     system: sys,
     messages,
   };
+  if (grounded) {
+    // NATIVE retrieval: the answering model searches for itself, so grounding is
+    // ADDITIVE — the model you picked stays the model that answers. No relay,
+    // no second-hand synthesis, and the citations are first-hand.
+    // Dynamic-filtering variant needs Opus 4.6+/Sonnet 4.6+; Haiku 4.5 is
+    // older-generation and takes the basic tool. (Fable 5 is newer than the
+    // cutoff so it gets the new variant — confirm on its first live call.)
+    body.tools = [{
+      type: spec.providerModel === "claude-haiku-4-5" ? "web_search_20250305" : "web_search_20260209",
+      name: "web_search",
+    }];
+  }
   // Sonnet 5 runs adaptive thinking BY DEFAULT — for chat we want predictable,
   // cheap, honestly-priced receipts, so turn it off explicitly (accepted there).
   // Opus 4.8 and Haiku 4.5 run without thinking when the field is omitted.
@@ -409,11 +432,32 @@ async function callAnthropic(spec: ModelSpec, messages: ChatMessage[], memoryCon
         "No content was generated. The receipt below reflects what was actually billed.",
       usage,
       truncated: false,
+      sources: [] as GroundingSource[],
+      searchRequests: 0,
     };
   }
-  const blocks: Array<{ type?: string; text?: string }> = data.content ?? [];
+  const blocks: Array<{ type?: string; text?: string; content?: unknown }> = data.content ?? [];
   const text = blocks.filter(b => b.type === "text").map(b => b.text ?? "").join("").trim();
-  return { text, usage, truncated: data.stop_reason === "max_tokens" };
+
+  // First-hand citations: the model's own search results, deduped by URL.
+  const sources: GroundingSource[] = [];
+  const seenUrls = new Set<string>();
+  for (const b of blocks) {
+    if (b.type !== "web_search_tool_result" || !Array.isArray(b.content)) continue;
+    for (const r of b.content as Array<{ url?: string; title?: string }>) {
+      if (!r?.url || seenUrls.has(r.url)) continue;
+      seenUrls.add(r.url);
+      sources.push({ title: r.title || r.url, uri: r.url });
+    }
+  }
+  // Real billed search count from the provider — never inferred from source count
+  // (one search can return many results, and a repeated search still costs).
+  const searchRequests: number = data.usage?.server_tool_use?.web_search_requests ?? 0;
+
+  // pause_turn = the server-side tool loop hit its cap mid-task. The answer is
+  // incomplete, so label it rather than presenting a stopped answer as finished.
+  const truncated = data.stop_reason === "max_tokens" || data.stop_reason === "pause_turn";
+  return { text, usage, truncated, sources, searchRequests };
 }
 
 // OpenAI and xAI both speak the OpenAI chat-completions shape, so one adapter
@@ -469,6 +513,8 @@ export async function GET(req: Request) {
       id: m.id, name: m.name, family: m.family, color: m.color,
       inPerM: m.inPerM, outPerM: m.outPerM, note: m.note,
       tier: m.tier ?? "free",
+      // Native retrieval: GROUND IT is additive for these, not a substitution.
+      selfGrounds: m.provider === "anthropic",
     })),
     quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
     payments: { enabled: stripeConfigured(), testMode: stripeTestMode() },
@@ -553,9 +599,16 @@ export async function POST(req: Request) {
 
   // GROUNDING — only Gemini has built-in Google Search, so GROUND IT overrides
   // the selected model to Gemini-grounded. callSpec is who actually answers.
+  // Models with NATIVE search retrieve for themselves, so grounding is ADDITIVE:
+  // the model you picked stays the model that answers, reasoning over sources it
+  // read first-hand. Only models without native search fall back to the Gemini
+  // relay — and that substitution is warned about up front and recorded in the
+  // sealed export, never silent.
   const groundingRequested = body.grounded === true;
+  const selfGrounds = spec.provider === "anthropic";
   const geminiSpec = getModel(GROUNDING_MODEL_ID);
-  const callSpec = (groundingRequested && geminiSpec) ? geminiSpec : spec;
+  const useRelay = groundingRequested && !selfGrounds && !!geminiSpec;
+  const callSpec = useRelay && geminiSpec ? geminiSpec : spec;
 
   // Free-tier quota
   // Paid path: wallet credentials are verified against the ledger BEFORE the
@@ -645,17 +698,26 @@ export async function POST(req: Request) {
   const outputCap = paid ? MAX_OUTPUT_TOKENS_PAID : MAX_OUTPUT_TOKENS_FREE;
   let text: string, usage: Usage, truncated = false;
   let grounding: { sources: GroundingSource[]; searchQueries: string[] } | null = null;
+  let searchRequests = 0;
   try {
-    if (groundingRequested && geminiSpec) {
+    if (useRelay) {
+      // Relay: Gemini retrieves AND answers. Second-hand for the model you picked.
       const out = await callGeminiGrounded(callSpec, providerMessages, memoryContext, outputCap);
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
       grounding = { sources: out.sources, searchQueries: out.searchQueries };
+      searchRequests = 1;
+    } else if (callSpec.provider === "anthropic") {
+      // Native: the selected model searches and reasons in one turn.
+      const out = await callAnthropic(callSpec, providerMessages, memoryContext, outputCap, groundingRequested);
+      text = out.text; usage = out.usage; truncated = out.truncated ?? false;
+      searchRequests = out.searchRequests;
+      if (groundingRequested && out.sources.length) {
+        grounding = { sources: out.sources, searchQueries: [] };
+      }
     } else {
       const out =
         callSpec.provider === "groq"
           ? await callGroq(callSpec, providerMessages, memoryContext, outputCap)
-        : callSpec.provider === "anthropic"
-          ? await callAnthropic(callSpec, providerMessages, memoryContext, outputCap)
         : (callSpec.provider === "openai" || callSpec.provider === "xai")
           ? await callOpenAICompatible(callSpec, providerMessages, memoryContext, outputCap)
         : await callGemini(callSpec, providerMessages, memoryContext, outputCap);
@@ -668,9 +730,10 @@ export async function POST(req: Request) {
   const tLlm = Date.now();
   const isGrounded = grounding !== null;
 
-  // [03] TOKEN ACCOUNTING + COST AUDIT — cost-plus receipt from real usage
-  // (grounded queries carry Google's real search-grounding surcharge).
-  const receipt = buildReceipt(callSpec, usage, isGrounded ? 1 : 0);
+  // [03] TOKEN ACCOUNTING + COST AUDIT — cost-plus receipt from real usage.
+  // Retrieval bills per REAL search at the answering provider's own rate
+  // (Anthropic native $0.01, Google relay $0.035) — never an assumed count.
+  const receipt = buildReceipt(callSpec, usage, searchRequests);
   const tReceipt = Date.now();
 
   // [04] BIAS SCREEN — validated dual-head triage label (fail-open)
@@ -720,9 +783,17 @@ export async function POST(req: Request) {
 
   // Paid queries do not consume the free-tier quota.
   const newQuota = paid ? { d: q.d, n: q.n } : { d: q.d, n: q.n + 1 };
+  const nSrc = grounding?.sources.length ?? 0;
+  const plural = nSrc === 1 ? "" : "s";
   const groundingLabel = isGrounded
-    ? `GROUNDED · ${grounding!.sources.length} source${grounding!.sources.length === 1 ? "" : "s"} retrieved & cited via Google Search`
-    : "UNGROUNDED — generated from model training, not retrieved or verified";
+    ? (useRelay
+        ? `GROUNDED (relayed) · ${nSrc} source${plural} retrieved by Gemini via Google Search — ` +
+          `${callSpec.name} both searched and answered`
+        : `GROUNDED (first-hand) · ${callSpec.name} ran ${searchRequests} search${searchRequests === 1 ? "" : "es"} ` +
+          `and cited ${nSrc} source${plural} it read itself`)
+    : groundingRequested
+      ? "UNGROUNDED — retrieval was requested but no search was run for this answer"
+      : "UNGROUNDED — generated from model training, not retrieved or verified";
 
   const res = NextResponse.json({
     text,
@@ -763,9 +834,13 @@ export async function POST(req: Request) {
       },
       { label: `LLM CALL — ${callSpec.name}${isGrounded ? " (grounded)" : ""}`, detail: `${callSpec.providerModel} via ${callSpec.provider}${groundingRequested && callSpec.id !== spec.id ? ` (GROUND IT overrode ${spec.name})` : ""} · output cap ${outputCap.toLocaleString()}${truncated ? " — CAP HIT, answer truncated" : ""}`, ms: tLlm - tMem },
       {
-        label: "GROUNDING",
+        label: isGrounded && !useRelay ? "GROUNDING — NATIVE (first-hand)" : "GROUNDING",
         detail: isGrounded
-          ? `Google Search · ${grounding!.sources.length} source${grounding!.sources.length === 1 ? "" : "s"} cited — answer retrieved, not just generated`
+          ? (useRelay
+              ? `Gemini + Google Search · ${nSrc} source${plural} cited · $${GROUNDING_COST_USD}/search — ` +
+                `retrieval RELAYED: Gemini answered on behalf of ${spec.name}`
+              : `${callSpec.name} native web search · ${searchRequests} search${searchRequests === 1 ? "" : "es"} × ` +
+                `$${ANTHROPIC_SEARCH_COST_USD} · ${nSrc} source${plural} — the answering model read these itself`)
           : "UNGROUNDED — answer generated from model training, not retrieved or verified",
         ms: 0,
       },

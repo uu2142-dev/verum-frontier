@@ -21,6 +21,13 @@ export const PRICE_SHEET_DATE = "2026-07-14";
 // retrieve-and-cite; the receipt shows it so nothing hides.
 export const GROUNDING_COST_USD = 0.035;
 
+// Anthropic's NATIVE web search — the answering model retrieves and cites for
+// itself, so there is no relay through another model's synthesis. $10 / 1,000
+// searches = $0.01/search, pinned from platform.claude.com/docs → Pricing ·
+// Web search tool. Cheaper than Google's $0.035 AND first-hand: the citations
+// point at what the answering model actually read.
+export const ANTHROPIC_SEARCH_COST_USD = 0.01;
+
 export type Provider = "groq" | "google" | "anthropic" | "openai" | "xai";
 
 // "free"    → eligible for the daily free tier (the current open-weight council)
@@ -237,7 +244,9 @@ export interface Receipt {
   rates: { inPerM: number; outPerM: number };
   usage: Usage;
   directUsd: number;     // token cost (real counts × rates)
-  groundingUsd: number;  // Google Search grounding surcharge (0 when ungrounded)
+  groundingUsd: number;  // retrieval surcharge (0 when ungrounded)
+  searchRequests: number;  // how many real searches were billed
+  searchUnitUsd: number;   // price per search for THIS provider
   infraUsd: number;      // 5% of (direct + grounding)
   supportUsd: number;    // 15% of (direct + grounding)
   supportSplit: { server: number; development: number; steward: number; reserve: number };
@@ -248,12 +257,16 @@ export interface Receipt {
 
 const usd = (v: number) => Number(v.toFixed(9));
 
-export function buildReceipt(spec: ModelSpec, usage: Usage, groundingRequests = 0): Receipt {
+export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0): Receipt {
   const direct = usd(
     (usage.inputTokens / 1_000_000) * spec.inPerM +
     (usage.outputTokens / 1_000_000) * spec.outPerM,
   );
-  const grounding = usd(groundingRequests * GROUNDING_COST_USD);
+  // Retrieval is priced per search, and the rate depends on WHO searched:
+  // a model with native search bills its provider's rate; the Gemini relay
+  // bills Google's. Never blend the two into one invented number.
+  const searchUnit = spec.provider === "anthropic" ? ANTHROPIC_SEARCH_COST_USD : GROUNDING_COST_USD;
+  const grounding = usd(searchRequests * searchUnit);
   const base = direct + grounding;
   const infra = usd(base * INFRA_PCT);
   const support = usd(base * SUPPORT_PCT);
@@ -264,6 +277,8 @@ export function buildReceipt(spec: ModelSpec, usage: Usage, groundingRequests = 
     usage,
     directUsd: direct,
     groundingUsd: grounding,
+    searchRequests,
+    searchUnitUsd: searchUnit,
     infraUsd: infra,
     supportUsd: support,
     supportSplit: {
