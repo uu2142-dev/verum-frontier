@@ -19,7 +19,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { NextResponse } from "next/server";
-import { MODEL_REGISTRY, PREMIUM_MODELS, getModel, buildReceipt, GROUNDING_COST_USD, ANTHROPIC_SEARCH_COST_USD, type ModelSpec, type Usage } from "@/lib/pricing";
+import { MODEL_REGISTRY, PREMIUM_MODELS, getModel, buildReceipt, effectiveRates, GROUNDING_COST_USD, ANTHROPIC_SEARCH_COST_USD, type ModelSpec, type Usage } from "@/lib/pricing";
 import { FREE_DAILY_LIMIT, QUOTA_COOKIE, decodeQuota, encodeQuota, quotaResetIso } from "@/lib/quota";
 import { debitWallet, walletBalance } from "@/lib/ledger";
 import { stripeConfigured, stripeTestMode } from "@/lib/stripe";
@@ -683,7 +683,9 @@ export async function GET(req: Request) {
       ...PREMIUM_MODELS.filter(m => providerConfigured(m.provider)),
     ].map(m => ({
       id: m.id, name: m.name, family: m.family, color: m.color,
-      inPerM: m.inPerM, outPerM: m.outPerM, note: m.note,
+      // Advertise the rates in force NOW (a scheduled step applies automatically),
+      // so chips, the ALICE router, and the Models tab match the receipt exactly.
+      ...effectiveRates(m), note: m.note,
       tier: m.tier ?? "free",
       // Native retrieval: GROUND IT is additive for these, not a substitution.
       selfGrounds: m.provider === "anthropic" || m.provider === "openai" || m.provider === "xai",

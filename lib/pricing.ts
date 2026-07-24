@@ -6,14 +6,21 @@
 //   + Project Support 15%  (server 30% / development 40% / steward 20% / reserve 10%)
 //   = YOUR COST
 //
-// Provider rates pinned 2026-07-14 (on-demand, per 1M tokens), read directly
-// from the PRIMARY sources: groq.com/pricing, ai.google.dev/gemini-api/docs/pricing.
-// (2026-07-14 correction: Llama 3.3 70B is $0.59/$0.79 on Groq's own page —
-// the $0.30/$0.40 pinned on 07-12 came from stale secondary sources and
-// understated receipts. Always re-verify against the provider's page.)
-// Update PRICE_SHEET_DATE whenever rates are re-verified.
+// Provider rates (on-demand, per 1M tokens) read directly from PRIMARY sources.
+// The sheet is layered — each block records when it was last verified:
+//   • Free council per-token rates — 2026-07-14, groq.com/pricing +
+//     ai.google.dev/gemini-api/docs/pricing. (07-14 correction: Llama 3.3 70B is
+//     $0.59/$0.79 on Groq's own page — the $0.30/$0.40 pinned 07-12 came from
+//     stale secondary sources and understated receipts.)
+//   • Premium council per-token rates — 2026-07-23 (see PREMIUM_MODELS below).
+//   • Per-search retrieval rates — 2026-07-23/24 (searchUnitUsd).
+//   • Cache-read multipliers — 2026-07-24 (cacheMultiplier), reconciled live
+//     against the xAI console.
+// PRICE_SHEET_DATE is the date the sheet last MATERIALLY changed — bump it on any
+// rate/structure change so the date printed on every receipt matches reality.
+// Always re-verify against the provider's own page before re-pinning.
 
-export const PRICE_SHEET_DATE = "2026-07-14";
+export const PRICE_SHEET_DATE = "2026-07-24";
 
 // Google Search grounding surcharge — Google bills grounded requests separately
 // from tokens ($35 / 1,000 requests = $0.035/request, pinned from
@@ -29,12 +36,11 @@ export const GROUNDING_COST_USD = 0.035;
 export const ANTHROPIC_SEARCH_COST_USD = 0.01;
 
 // Native search on the other premium providers, each pinned 2026-07-23:
-//   OpenAI  $10.00 / 1k calls (developers.openai.com → Pricing · Built-in tools)
-//           NOTE: on Chat Completions this needs the dedicated gpt-5-search-api
-//           model; gpt-5.6-sol gets search only via the RESPONSES API, a
-//           different endpoint shape. Until that adapter exists, OpenAI stays on
-//           the Gemini relay — swapping in a different model to fake "native"
-//           would be the substitution bug we just removed.
+//   OpenAI  $10.00 / 1k calls (developers.openai.com → Pricing · Built-in tools).
+//           gpt-5.6-sol grounds via the RESPONSES API (a different endpoint shape
+//           from Chat Completions) with the web_search server tool — the adapter
+//           exists and is verified live, so OpenAI grounds first-hand, NOT via the
+//           Gemini relay. Ungrounded GPT still uses Chat Completions.
 //   xAI     $5.00 / 1k calls (docs.x.ai → Pricing · Tools) — cheapest of all.
 // Both wired via the RESPONSES surface: OpenAI verified live (12 searches,
 // receipt matched); xAI through its Agent Tools API at api.x.ai/v1/responses —
@@ -100,6 +106,24 @@ export interface ModelSpec {
   outPerM: number;       // USD per 1M output tokens
   note: string;
   tier?: ModelTier;      // undefined = "free"
+  // A pre-announced rate change that takes effect ON/AFTER `from` (ISO date, UTC).
+  // The gate flips to these rates automatically on that date so it never silently
+  // under- or over-charges against a provider's scheduled price step. Used for
+  // Sonnet 5's intro-pricing expiry — see effectiveRates().
+  scheduledRate?: { from: string; inPerM: number; outPerM: number };
+}
+
+// The rates in force for a spec at a given moment. If a scheduledRate has come
+// due, those win — so a provider's announced price step (e.g. Sonnet 5's intro
+// pricing ending 2026-08-31) applies automatically instead of waiting on a manual
+// re-pin. The receipt, the chips, and the estimates all read through this, so
+// billing and display never diverge from what the provider actually charges.
+export function effectiveRates(spec: ModelSpec, now: Date = new Date()): { inPerM: number; outPerM: number } {
+  const sched = spec.scheduledRate;
+  if (sched && now.getTime() >= Date.parse(sched.from + "T00:00:00Z")) {
+    return { inPerM: sched.inPerM, outPerM: sched.outPerM };
+  }
+  return { inPerM: spec.inPerM, outPerM: spec.outPerM };
 }
 
 export const MODEL_REGISTRY: readonly ModelSpec[] = [
@@ -213,8 +237,11 @@ export const PREMIUM_MODELS: readonly ModelSpec[] = [
     name: "Claude Sonnet 5",
     family: "Anthropic",
     color: "#c98fb1",
-    inPerM: 2,   // introductory thru 2026-08-31; → $3 on 2026-09-01
-    outPerM: 10, // introductory thru 2026-08-31; → $15 on 2026-09-01
+    inPerM: 2,   // introductory thru 2026-08-31
+    outPerM: 10, // introductory thru 2026-08-31
+    // Anthropic's announced step; the gate flips to it automatically on this date
+    // so Sonnet is never silently under-billed after intro pricing ends.
+    scheduledRate: { from: "2026-09-01", inPerM: 3, outPerM: 15 },
     note: "Balanced flagship · credits only · intro pricing thru Aug 31 2026",
     tier: "premium",
   },
@@ -314,17 +341,21 @@ export interface Receipt {
 
 const usd = (v: number) => Number(v.toFixed(9));
 
-export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0): Receipt {
+export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0, now: Date = new Date()): Receipt {
+  // Rates in force at the moment of the query — a scheduled price step (e.g.
+  // Sonnet 5's intro pricing ending Aug 31) applies automatically, so the receipt
+  // never diverges from what the provider actually charges.
+  const { inPerM, outPerM } = effectiveRates(spec, now);
   // Split input into cache-hits (billed cheap) and uncached (billed full), exactly
   // as the provider does. Billing everything at the full input rate over-charged
   // long/grounded/recall-heavy queries, where most of the context is cached.
   const cached = Math.max(0, Math.min(usage.cachedInputTokens ?? 0, usage.inputTokens));
   const uncached = usage.inputTokens - cached;
-  const cacheRatePerM = usd(spec.inPerM * cacheMultiplier(spec.provider));
+  const cacheRatePerM = usd(inPerM * cacheMultiplier(spec.provider));
   const direct = usd(
-    (uncached / 1_000_000) * spec.inPerM +
+    (uncached / 1_000_000) * inPerM +
     (cached / 1_000_000) * cacheRatePerM +
-    (usage.outputTokens / 1_000_000) * spec.outPerM,
+    (usage.outputTokens / 1_000_000) * outPerM,
   );
   // Retrieval is priced per search, and the rate depends on WHO searched:
   // a model with native search bills its provider's rate; the Gemini relay
@@ -337,7 +368,7 @@ export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0):
   return {
     priceSheetDate: PRICE_SHEET_DATE,
     model: spec.id,
-    rates: { inPerM: spec.inPerM, outPerM: spec.outPerM },
+    rates: { inPerM, outPerM },
     usage,
     directUsd: direct,
     uncachedInputTokens: uncached,

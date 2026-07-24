@@ -624,7 +624,11 @@ export default function VerumFrontier() {
       {/* ── FOOTER ────────────────────────────────────────────────────── */}
       <footer className="absolute bottom-0 left-0 right-0 z-50 px-3 py-1 bg-black border-t border-white/5 flex justify-between items-center">
         <span className="text-[7px] text-zinc-600 tracking-[0.15em] hidden md:block">RABBIT HOLE AI // MIT LICENSE</span>
-        <span className="text-[7px] text-zinc-700 tracking-[0.1em] hidden lg:block">BIAS CHECKER → ANTI-DATA → LLM → RESPONSE AUDIT → MERKLE ARCHIVIST</span>
+        <span className="text-[7px] text-zinc-700 tracking-[0.1em] hidden lg:block">
+          {mode === "demo"
+            ? "BIAS CHECKER → ANTI-DATA → LLM → RESPONSE AUDIT → MERKLE ARCHIVIST"
+            : "INTENT → RECALL → LLM → GROUNDING → COST AUDIT → BIAS SCREEN → MERKLE SEAL"}
+        </span>
         <span className="text-[7px] text-zinc-600 tracking-[0.15em]">
           <a href="/terms" className="hover:text-zinc-400">TERMS</a>
           {" · "}
