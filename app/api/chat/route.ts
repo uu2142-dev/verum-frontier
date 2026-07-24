@@ -457,7 +457,7 @@ async function callAnthropic(
     for (const r of b.content as Array<{ url?: string; title?: string }>) {
       if (!r?.url || seenUrls.has(r.url)) continue;
       seenUrls.add(r.url);
-      sources.push({ title: r.title || r.url, uri: r.url });
+      sources.push({ title: cleanSourceTitle(r.title, r.url), uri: r.url });
     }
   }
   // Real billed search count from the provider — never inferred from source count
@@ -560,6 +560,18 @@ async function callOpenAICompatible(
   };
 }
 
+// Source titles from provider annotations are sometimes junk: Grok's inline
+// [[1]](url) citations arrive with title "1", GPT PDFs arrive "untitled" or as
+// the bare URL. A source list reading "1, 2, 3" is useless provenance — fall
+// back to the hostname, which always says WHERE the claim came from.
+function cleanSourceTitle(title: string | undefined, url: string): string {
+  const t = (title ?? "").trim();
+  if (!t || t.toLowerCase() === "untitled" || /^\[?\d{1,3}\]?$/.test(t) || t.startsWith("http")) {
+    try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; }
+  }
+  return t;
+}
+
 // RESPONSES API — where gpt-5.6-sol AND grok-4.5 search natively. OpenAI's
 // shape (`instructions` + `input` + `max_output_tokens`, web_search server
 // tool) — VERIFIED LIVE for OpenAI (12 searches, receipt matched). xAI's Agent
@@ -613,7 +625,7 @@ async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], mem
     for (const c of it.content as Array<{ type?: string; text?: string; annotations?: Array<{ type?: string; url?: string; title?: string }> }>) {
       if (typeof c.text === "string") text += c.text;
       for (const a of c.annotations ?? []) {
-        if (a?.url && !seen.has(a.url)) { seen.add(a.url); sources.push({ title: a.title || a.url, uri: a.url }); }
+        if (a?.url && !seen.has(a.url)) { seen.add(a.url); sources.push({ title: cleanSourceTitle(a.title, a.url), uri: a.url }); }
       }
     }
   }
@@ -630,7 +642,7 @@ async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], mem
       if (!url || seen.has(url)) continue;
       seen.add(url);
       const title = typeof c === "string" ? "" : (c as { title?: string })?.title;
-      sources.push({ title: title || url, uri: url });
+      sources.push({ title: cleanSourceTitle(title, url), uri: url });
     }
   }
   // If sources prove a search happened but no web_search_call item was counted
