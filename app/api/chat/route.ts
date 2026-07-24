@@ -465,12 +465,31 @@ async function callAnthropic(
 // and taking real traffic, and refactoring it into a shared path would risk the
 // working receipt math for no user-visible gain.
 // No temperature — current OpenAI reasoning models reject non-default sampling.
-async function callOpenAICompatible(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number) {
-  const base = systemPrompt(spec);
+async function callOpenAICompatible(
+  spec: ModelSpec,
+  messages: ChatMessage[],
+  memoryContext: string | null,
+  maxTokens: number,
+  grounded = false,
+) {
+  const base = systemPrompt(spec) + (grounded
+    ? "\n\nYou have a web search tool. Search before answering when the question " +
+      "turns on facts you cannot verify from training alone, and cite what you " +
+      "actually read. If the sources do not settle a claim, say so plainly."
+    : "");
   const sys = memoryContext ? `${base}\n\n${memoryContext}` : base;
   const cfg = spec.provider === "xai"
     ? { url: "https://api.x.ai/v1/chat/completions", key: process.env.XAI_API_KEY, label: "xAI" }
     : { url: "https://api.openai.com/v1/chat/completions", key: process.env.OPENAI_API_KEY, label: "OpenAI" };
+
+  const reqBody: Record<string, unknown> = {
+    model: spec.providerModel,
+    messages: [{ role: "system", content: sys }, ...messages],
+    max_completion_tokens: maxTokens,
+  };
+  // xAI exposes native search as a tool on this same endpoint. OpenAI does NOT
+  // here (gpt-5.6-sol needs the Responses API), so it is never sent one.
+  if (grounded && spec.provider === "xai") reqBody.tools = [{ type: "web_search" }];
 
   const res = await fetch(cfg.url, {
     method: "POST",
@@ -478,11 +497,7 @@ async function callOpenAICompatible(spec: ModelSpec, messages: ChatMessage[], me
       Authorization: `Bearer ${cfg.key ?? ""}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model: spec.providerModel,
-      messages: [{ role: "system", content: sys }, ...messages],
-      max_completion_tokens: maxTokens,
-    }),
+    body: JSON.stringify(reqBody),
     signal: AbortSignal.timeout(55_000),
   });
   if (!res.ok) {
@@ -495,7 +510,41 @@ async function callOpenAICompatible(spec: ModelSpec, messages: ChatMessage[], me
     inputTokens: data.usage?.prompt_tokens ?? 0,
     outputTokens: data.usage?.completion_tokens ?? 0,
   };
-  return { text, usage, truncated: data.choices?.[0]?.finish_reason === "length" };
+
+  // xAI citations. The docs show `citations` but are not explicit about the exact
+  // location or the billed-count field on the raw API, so both plausible spots
+  // are read and entries may be bare URL strings or objects.
+  const sources: GroundingSource[] = [];
+  const seenUrls = new Set<string>();
+  const rawCites: unknown[] = Array.isArray(data.citations)
+    ? data.citations
+    : Array.isArray(data.choices?.[0]?.message?.citations)
+      ? data.choices[0].message.citations
+      : [];
+  for (const c of rawCites) {
+    const url = typeof c === "string" ? c : (c as { url?: string })?.url;
+    if (!url || seenUrls.has(url)) continue;
+    seenUrls.add(url);
+    const title = typeof c === "string" ? "" : (c as { title?: string })?.title;
+    sources.push({ title: title || url, uri: url });
+  }
+  // Prefer a provider-reported count. If xAI does not report one, fall back to a
+  // MINIMUM of 1 billed call rather than guessing high — and searchCountExact
+  // tells the receipt whether the number is measured or a floor.
+  const reported = data.usage?.num_sources_used ?? data.usage?.num_searches ?? null;
+  const searchCountExact = typeof reported === "number";
+  const searchRequests: number = searchCountExact
+    ? reported
+    : (sources.length > 0 ? 1 : 0);
+
+  return {
+    text,
+    usage,
+    truncated: data.choices?.[0]?.finish_reason === "length",
+    sources,
+    searchRequests,
+    searchCountExact,
+  };
 }
 
 // ── GET: model registry + quota status (client boot) ────────────────────
@@ -514,7 +563,7 @@ export async function GET(req: Request) {
       inPerM: m.inPerM, outPerM: m.outPerM, note: m.note,
       tier: m.tier ?? "free",
       // Native retrieval: GROUND IT is additive for these, not a substitution.
-      selfGrounds: m.provider === "anthropic",
+      selfGrounds: m.provider === "anthropic" || m.provider === "xai",
     })),
     quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
     payments: { enabled: stripeConfigured(), testMode: stripeTestMode() },
@@ -605,7 +654,10 @@ export async function POST(req: Request) {
   // relay — and that substitution is warned about up front and recorded in the
   // sealed export, never silent.
   const groundingRequested = body.grounded === true;
-  const selfGrounds = spec.provider === "anthropic";
+  // Anthropic and xAI expose native web search on the endpoints we already call.
+  // OpenAI's needs the Responses API (gpt-5.6-sol can't search on Chat
+  // Completions), so it relays until that adapter lands — see pricing.ts.
+  const selfGrounds = spec.provider === "anthropic" || spec.provider === "xai";
   const geminiSpec = getModel(GROUNDING_MODEL_ID);
   const useRelay = groundingRequested && !selfGrounds && !!geminiSpec;
   const callSpec = useRelay && geminiSpec ? geminiSpec : spec;
@@ -714,12 +766,17 @@ export async function POST(req: Request) {
       if (groundingRequested && out.sources.length) {
         grounding = { sources: out.sources, searchQueries: [] };
       }
+    } else if (callSpec.provider === "openai" || callSpec.provider === "xai") {
+      // xAI searches natively; OpenAI here never does (see selfGrounds above).
+      const out = await callOpenAICompatible(callSpec, providerMessages, memoryContext, outputCap, groundingRequested);
+      text = out.text; usage = out.usage; truncated = out.truncated ?? false;
+      searchRequests = out.searchRequests;
+      if (groundingRequested && out.sources.length) {
+        grounding = { sources: out.sources, searchQueries: [] };
+      }
     } else {
-      const out =
-        callSpec.provider === "groq"
-          ? await callGroq(callSpec, providerMessages, memoryContext, outputCap)
-        : (callSpec.provider === "openai" || callSpec.provider === "xai")
-          ? await callOpenAICompatible(callSpec, providerMessages, memoryContext, outputCap)
+      const out = callSpec.provider === "groq"
+        ? await callGroq(callSpec, providerMessages, memoryContext, outputCap)
         : await callGemini(callSpec, providerMessages, memoryContext, outputCap);
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
     }

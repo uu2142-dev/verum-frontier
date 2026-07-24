@@ -102,6 +102,10 @@ const STORE_KEY = "vf_session_v1";
 // Completed + in-progress sessions are archived here (keyed by startedAt,
 // FIFO-capped) so a session you forgot to download is never lost — the Sealed
 // Memories tab re-downloads from this. Same browser-only, no-server rule.
+// Model chosen in the Models tab — read on boot so a pick made there survives
+// the tab switch (the gate unmounts when you leave it).
+const MODEL_KEY = "vf_model_v1";
+
 const ARCHIVE_KEY = "vf_archive_v1";
 const ARCHIVE_CAP = 60;
 
@@ -532,7 +536,13 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
       .then(d => {
         if (!d.models?.length) throw new Error("no models");
         setModels(d.models);
-        setModelId(d.models[0].id);
+        // Honour a pick made in the Models tab, if it still exists in the boot list.
+        let initial = d.models[0].id;
+        try {
+          const saved = localStorage.getItem(MODEL_KEY);
+          if (saved && d.models.some((m: ModelInfo) => m.id === saved)) initial = saved;
+        } catch { /* ignore */ }
+        setModelId(initial);
         setQuota(d.quota ?? null);
         setSealKey(d.sealKey ?? null);
         setPayments(d.payments ?? { enabled: false, testMode: false });
@@ -1012,7 +1022,10 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
             const premium = m.tier === "premium";
             const locked = premium && !creditsActive;
             return (
-              <button key={m.id} onClick={() => { setModelId(m.id); setRouterMode(null); }}
+              <button key={m.id} onClick={() => {
+                  setModelId(m.id); setRouterMode(null);
+                  try { localStorage.setItem(MODEL_KEY, m.id); } catch { /* ignore */ }
+                }}
                 title={premium
                   ? `${m.name} — premium, credits only. ${locked
                       ? "Add credits to unlock it; the free council stays free."

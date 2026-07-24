@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import LiveGate from "@/components/LiveGate";
 import SealedMemories from "@/components/SealedMemories";
+import ModelCards from "@/components/ModelCards";
 
 // ── RHAI/ALICE Math (mirrors Python stack exactly) ────────────────────────
 
@@ -224,6 +225,7 @@ function MerkleView({ data }: { data: { leaves: string[]; root: string } | null 
 // it has brand value; adding a tab is reversible, deleting it isn't.
 const MODE_META = {
   live:     { label: "LIVE GATE",       accent: "#2ecc71", bg: "rgba(46,204,113,0.1)",  dot: "● " },
+  models:   { label: "MODELS",          accent: "#8ab4f8", bg: "rgba(138,180,248,0.12)", dot: "" },
   memories: { label: "SEALED MEMORIES", accent: "#b39ddb", bg: "rgba(179,157,219,0.12)", dot: "" },
   demo:     { label: "SIM DEMO",        accent: "#c8941a", bg: "rgba(200,148,26,0.1)",  dot: "" },
 } as const;
@@ -382,7 +384,7 @@ export default function VerumFrontier() {
 
         {/* Mode toggle */}
         <div className="flex items-center gap-0 font-mono">
-          {(["live", "memories", "demo"] as const).map(m => {
+          {(["live", "models", "memories", "demo"] as const).map(m => {
             const meta = MODE_META[m];
             const on = mode === m;
             return (
@@ -408,6 +410,7 @@ export default function VerumFrontier() {
         </div>
         <div className="hidden lg:block text-[8px] text-zinc-600 tracking-wider uppercase">
           {mode === "live" ? "LIVE COUNCIL · RECEIPTS + SEALS REAL"
+            : mode === "models" ? "MODEL CATALOGUE · REAL RATES · KEY-GATED"
             : mode === "memories" ? "SEALED VAULT · BROWSER-LOCAL · RE-DOWNLOADABLE"
             : "SIMULATED CALIBRATION DEMO"}
         </div>
@@ -415,6 +418,9 @@ export default function VerumFrontier() {
 
       {/* ── LIVE GATE MODE ────────────────────────────────────────────── */}
       {mode === "live" && <LiveGate onFallbackToDemo={() => setMode("demo")} onOpenMemories={() => setMode("memories")} />}
+
+      {/* ── MODELS (catalogue) ────────────────────────────────────────── */}
+      {mode === "models" && <ModelCards onPick={() => setMode("live")} />}
 
       {/* ── SEALED MEMORIES (VAULT) ───────────────────────────────────── */}
       {mode === "memories" && <SealedMemories onBack={() => setMode("live")} />}

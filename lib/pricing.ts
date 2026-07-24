@@ -28,7 +28,30 @@ export const GROUNDING_COST_USD = 0.035;
 // point at what the answering model actually read.
 export const ANTHROPIC_SEARCH_COST_USD = 0.01;
 
+// Native search on the other premium providers, each pinned 2026-07-23:
+//   OpenAI  $10.00 / 1k calls (developers.openai.com → Pricing · Built-in tools)
+//           NOTE: on Chat Completions this needs the dedicated gpt-5-search-api
+//           model; gpt-5.6-sol gets search only via the RESPONSES API, a
+//           different endpoint shape. Until that adapter exists, OpenAI stays on
+//           the Gemini relay — swapping in a different model to fake "native"
+//           would be the substitution bug we just removed.
+//   xAI     $5.00 / 1k calls (docs.x.ai → Pricing · Tools) — cheapest of all.
+export const OPENAI_SEARCH_COST_USD = 0.01;
+export const XAI_SEARCH_COST_USD = 0.005;
+
 export type Provider = "groq" | "google" | "anthropic" | "openai" | "xai";
+
+// What ONE web search costs, by whoever actually ran it. These differ by 7x
+// across providers, so a single blended "grounding cost" would misreport every
+// query. The receipt bills the rate of the provider that did the searching.
+export function searchUnitUsd(provider: Provider): number {
+  switch (provider) {
+    case "anthropic": return ANTHROPIC_SEARCH_COST_USD;
+    case "openai":    return OPENAI_SEARCH_COST_USD;
+    case "xai":       return XAI_SEARCH_COST_USD;
+    default:          return GROUNDING_COST_USD; // Gemini relay via Google
+  }
+}
 
 // "free"    → eligible for the daily free tier (the current open-weight council)
 // "premium" → credits-only; too expensive to give away, gated behind a funded
@@ -265,7 +288,7 @@ export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0):
   // Retrieval is priced per search, and the rate depends on WHO searched:
   // a model with native search bills its provider's rate; the Gemini relay
   // bills Google's. Never blend the two into one invented number.
-  const searchUnit = spec.provider === "anthropic" ? ANTHROPIC_SEARCH_COST_USD : GROUNDING_COST_USD;
+  const searchUnit = searchUnitUsd(spec.provider);
   const grounding = usd(searchRequests * searchUnit);
   const base = direct + grounding;
   const infra = usd(base * INFRA_PCT);
