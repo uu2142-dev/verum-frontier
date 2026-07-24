@@ -44,6 +44,7 @@ const MAX_OUTPUT_TOKENS_FREE = 1024;
 const MAX_OUTPUT_TOKENS_PAID = 4096; // paying customers get room; cost-plus bills it honestly
 const MAX_ATTACH_CHARS = 24_000; // attached text rides ONE turn; its cost shows on the receipt
 const GROUNDING_MODEL_ID = "gemini-2.5-flash"; // only Gemini has built-in Google Search grounding
+const XAI_MAX_SEARCH_RESULTS = 15; // cap xAI Live Search sources to bound per-source cost ($0.005 each)
 
 // Models must know WHO they are: the gate lets users switch models
 // mid-conversation ("same question for Gemini"), so each model is told its
@@ -497,14 +498,19 @@ async function callOpenAICompatible(
     messages: [{ role: "system", content: sys }, ...messages],
     max_completion_tokens: maxTokens,
   };
-  // NOTE: neither OpenAI nor xAI is sent a native search tool on THIS endpoint.
-  // Field test disproved the earlier assumption — xAI's `tools:[{type:web_search}]`
-  // is a RESPONSES-API shape ("input"), not Chat Completions ("messages"), so Grok
-  // silently ignored it and answered from training (searchRequests:0). And xAI's
-  // billing (per-call vs per-source) is unconfirmed. Two unverified unknowns on a
-  // paid path ⇒ Grok relays to Gemini (honest, priced, recorded) until native xAI
-  // is confirmed AND cost-tested. `grounded` is retained for a future native path.
-  void grounded;
+  // xAI Live Search on Chat Completions — CONFIRMED shape from docs.x.ai API
+  // reference: a top-level `search_parameters` object (NOT the Responses-API
+  // `tools:[{type:web_search}]` that the field test proved does nothing here).
+  // mode "on" because the user explicitly toggled GROUND IT; results capped to
+  // bound cost. Billed PER SOURCE via usage.num_sources_used (parsed below) at
+  // $0.005/source. OpenAI never reaches here grounded — it uses the Responses path.
+  if (grounded && spec.provider === "xai") {
+    reqBody.search_parameters = {
+      mode: "on",
+      return_citations: true,
+      max_search_results: XAI_MAX_SEARCH_RESULTS,
+    };
+  }
 
   const res = await fetch(cfg.url, {
     method: "POST",
@@ -646,7 +652,7 @@ export async function GET(req: Request) {
       inPerM: m.inPerM, outPerM: m.outPerM, note: m.note,
       tier: m.tier ?? "free",
       // Native retrieval: GROUND IT is additive for these, not a substitution.
-      selfGrounds: m.provider === "anthropic" || m.provider === "openai",
+      selfGrounds: m.provider === "anthropic" || m.provider === "openai" || m.provider === "xai",
     })),
     quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
     payments: { enabled: stripeConfigured(), testMode: stripeTestMode() },
@@ -738,10 +744,10 @@ export async function POST(req: Request) {
   // sealed export, never silent.
   const groundingRequested = body.grounded === true;
   // Self-grounding = native web search on the endpoint we call for grounding.
-  // Anthropic (Messages) verified live; OpenAI via the Responses API (this build,
-  // pending first live round-trip). xAI's Chat-Completions search param + billing
-  // are still unconfirmed, so grounded xAI relays to Gemini.
-  const selfGrounds = spec.provider === "anthropic" || spec.provider === "openai";
+  // Anthropic (Messages) + OpenAI (Responses) verified live; xAI via Chat
+  // Completions search_parameters (confirmed shape, per-source billing) — its
+  // first live grounded round-trip is the verification.
+  const selfGrounds = spec.provider === "anthropic" || spec.provider === "openai" || spec.provider === "xai";
   const geminiSpec = getModel(GROUNDING_MODEL_ID);
   const useRelay = groundingRequested && !selfGrounds && !!geminiSpec;
   const callSpec = useRelay && geminiSpec ? geminiSpec : spec;
@@ -866,9 +872,13 @@ export async function POST(req: Request) {
         grounding = { sources: out.sources, searchQueries: [] };
       }
     } else if (callSpec.provider === "xai") {
-      // xAI never grounds here — grounded xAI relays to Gemini (handled above).
-      const out = await callOpenAICompatible(callSpec, providerMessages, memoryContext, outputCap);
+      // xAI grounds natively via search_parameters on this same endpoint.
+      const out = await callOpenAICompatible(callSpec, providerMessages, memoryContext, outputCap, groundingRequested);
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
+      searchRequests = out.searchRequests; // xAI: usage.num_sources_used (per-source)
+      if (groundingRequested && out.sources.length) {
+        grounding = { sources: out.sources, searchQueries: [] };
+      }
     } else {
       const out = callSpec.provider === "groq"
         ? await callGroq(callSpec, providerMessages, memoryContext, outputCap)

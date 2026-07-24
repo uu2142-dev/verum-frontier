@@ -36,12 +36,12 @@ export const ANTHROPIC_SEARCH_COST_USD = 0.01;
 //           the Gemini relay — swapping in a different model to fake "native"
 //           would be the substitution bug we just removed.
 //   xAI     $5.00 / 1k calls (docs.x.ai → Pricing · Tools) — cheapest of all.
-// OpenAI IS wired now via the Responses API (callOpenAIResponses) — pending its
-// first live grounded round-trip. xAI is NOT: its documented tool shape is
-// Responses-API-only ("input"), the field test proved it does nothing on Chat
-// Completions, and its per-call-vs-per-source billing is unconfirmed — so
-// grounded xAI RELAYS to Gemini (announced + recorded) until confirmed and
-// cost-tested. The xAI constant stays pinned so wiring native later is a lookup.
+// Both wired now: OpenAI via the Responses API (verified live — 12 searches,
+// receipt matched), xAI via Chat Completions `search_parameters` (confirmed
+// shape from docs.x.ai; billed PER SOURCE via usage.num_sources_used at
+// XAI_SEARCH_COST_USD = $0.005/source). xAI's first live grounded round-trip is
+// its verification — Jerry can reconcile our receipt against his xAI console
+// charge to confirm the per-source rate.
 export const OPENAI_SEARCH_COST_USD = 0.01;
 export const XAI_SEARCH_COST_USD = 0.005;
 
