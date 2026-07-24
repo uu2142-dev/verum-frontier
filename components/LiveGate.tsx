@@ -54,6 +54,8 @@ interface Exchange {
   truncated?: boolean;
   outputCap?: number;
   grounded?: boolean;
+  groundingRequested?: boolean;
+  groundingMode?: string; // "off" | "relay" | "native"
   grounding?: GroundingInfo | null;
   groundingLabel?: string;
   stages: Stage[];
@@ -131,6 +133,10 @@ function buildSessionPayload(startedAt: string, exchanges: Exchange[], chainRoot
       receipt: ex.receipt,
       biasScreen: ex.bias,
       grounded: ex.grounded ?? false,
+      // Diagnostic: was retrieval REQUESTED, and how was it served (off/relay/
+      // native)? Distinguishes "searched and found nothing" from "never searched".
+      groundingRequested: ex.groundingRequested ?? false,
+      groundingMode: ex.groundingMode ?? "off",
       grounding: ex.grounding ?? null,
       seal: ex.seal,
       timingMs: ex.timingMs,
@@ -669,6 +675,8 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
         truncated: data.truncated ?? false,
         outputCap: data.outputCap,
         grounded: data.grounded ?? false,
+        groundingRequested: data.groundingRequested ?? false,
+        groundingMode: data.groundingMode ?? "off",
         grounding: data.grounding ?? null,
         groundingLabel: data.groundingLabel,
         stages: data.stages,

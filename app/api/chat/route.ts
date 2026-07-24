@@ -487,9 +487,14 @@ async function callOpenAICompatible(
     messages: [{ role: "system", content: sys }, ...messages],
     max_completion_tokens: maxTokens,
   };
-  // xAI exposes native search as a tool on this same endpoint. OpenAI does NOT
-  // here (gpt-5.6-sol needs the Responses API), so it is never sent one.
-  if (grounded && spec.provider === "xai") reqBody.tools = [{ type: "web_search" }];
+  // NOTE: neither OpenAI nor xAI is sent a native search tool on THIS endpoint.
+  // Field test disproved the earlier assumption — xAI's `tools:[{type:web_search}]`
+  // is a RESPONSES-API shape ("input"), not Chat Completions ("messages"), so Grok
+  // silently ignored it and answered from training (searchRequests:0). And xAI's
+  // billing (per-call vs per-source) is unconfirmed. Two unverified unknowns on a
+  // paid path ⇒ Grok relays to Gemini (honest, priced, recorded) until native xAI
+  // is confirmed AND cost-tested. `grounded` is retained for a future native path.
+  void grounded;
 
   const res = await fetch(cfg.url, {
     method: "POST",
@@ -563,7 +568,7 @@ export async function GET(req: Request) {
       inPerM: m.inPerM, outPerM: m.outPerM, note: m.note,
       tier: m.tier ?? "free",
       // Native retrieval: GROUND IT is additive for these, not a substitution.
-      selfGrounds: m.provider === "anthropic" || m.provider === "xai",
+      selfGrounds: m.provider === "anthropic",
     })),
     quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
     payments: { enabled: stripeConfigured(), testMode: stripeTestMode() },
@@ -654,10 +659,10 @@ export async function POST(req: Request) {
   // relay — and that substitution is warned about up front and recorded in the
   // sealed export, never silent.
   const groundingRequested = body.grounded === true;
-  // Anthropic and xAI expose native web search on the endpoints we already call.
-  // OpenAI's needs the Responses API (gpt-5.6-sol can't search on Chat
-  // Completions), so it relays until that adapter lands — see pricing.ts.
-  const selfGrounds = spec.provider === "anthropic" || spec.provider === "xai";
+  // Only Anthropic self-grounds on the endpoint we already call (verified live).
+  // OpenAI needs the Responses API; xAI's Chat-Completions search param + billing
+  // are unconfirmed and the field test showed no search ran — both relay for now.
+  const selfGrounds = spec.provider === "anthropic";
   const geminiSpec = getModel(GROUNDING_MODEL_ID);
   const useRelay = groundingRequested && !selfGrounds && !!geminiSpec;
   const callSpec = useRelay && geminiSpec ? geminiSpec : spec;
@@ -700,6 +705,21 @@ export async function POST(req: Request) {
         quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
       },
       { status: 402 },
+    );
+  }
+  // Fable 5 + retrieval does not fit the platform's 60s function ceiling:
+  // always-on deep reasoning plus multi-search overruns it, and a timeout after
+  // 60s of thinking is a worse experience than an honest refusal up front.
+  // (Grounded Opus 4.8 measured ~46s — already close to the ceiling.)
+  if (groundingRequested && callSpec.providerModel === "claude-fable-5") {
+    return NextResponse.json(
+      {
+        error: "Claude Fable 5 can't be grounded here yet: its always-on reasoning plus web search " +
+          "overruns this deployment's 60-second limit, so the request would time out after burning " +
+          "credits. Use Claude Opus 4.8 with GROUND IT (measured ~46s), or run Fable 5 ungrounded.",
+        groundingUnsupported: true,
+      },
+      { status: 400 },
     );
   }
   const tIntent = Date.now();
@@ -861,6 +881,11 @@ export async function POST(req: Request) {
     bias,
     memoryRecall,
     grounded: isGrounded,
+    // Was retrieval ASKED for? Without this, a session file can't distinguish
+    // "search ran and found nothing" from "search was never requested" — which
+    // makes a whole class of grounding bug undiagnosable from the artifact.
+    groundingRequested,
+    groundingMode: !groundingRequested ? "off" : useRelay ? "relay" : "native",
     grounding: grounding ? { sources: grounding.sources, searchQueries: grounding.searchQueries } : null,
     groundingLabel,
     wallet: walletOut,
