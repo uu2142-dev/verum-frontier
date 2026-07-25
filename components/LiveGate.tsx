@@ -153,8 +153,21 @@ function buildSessionPayload(startedAt: string, exchanges: Exchange[], chainRoot
       "chain is SHA-256(prevChainHash + seal.root), genesis = " +
       "SHA-256('VERUM_FRONTIER_SESSION_GENESIS' + startedAt). Any SHA-256 tool can re-verify. " +
       "Where seal.sig is present, it is an Ed25519 signature over " +
-      "'VF-SEAL-v1|<root>|<sealedAt>' by sealPublicKey — proving the exchange " +
-      "was sealed by rabbitholeai.ai and not altered since.",
+      "'VF-SEAL-v1|<root>|<sealedAt>' by sealPublicKey. " +
+      // The three checks above bind HASHES, not the human-readable text beside them.
+      // A signature over a Merkle root proves the root was sealed by this gate at that
+      // time; on its own it does NOT prove the query/response strings you are reading
+      // are the ones that produced it. Edit the visible text and all three still pass.
+      // Step 4 is the one that catches that, so it is stated here rather than assumed.
+      "IMPORTANT — those three checks prove the SEAL is authentic, not that the text " +
+      "printed beside it is what was sealed. To bind the readable transcript to the " +
+      "seal you must recompute the content leaves and confirm they appear in seal.leaves: " +
+      "QUERY = SHA-256(JSON.stringify({q: <query>, ts: <seal.sealedAt>})), " +
+      "RESPONSE = SHA-256(JSON.stringify({r: <response>, model: <model>})). " +
+      "Serialization is JSON.stringify semantics: keys in the order given, no whitespace, " +
+      "non-ASCII characters NOT escaped, hashed as UTF-8. Without this step, altering the " +
+      "visible text is undetectable. A pure-stdlib reference verifier that performs all " +
+      "four checks is at github.com/uu2142-dev/alice-evidence (memory/verify_session.py).",
   };
 }
 
