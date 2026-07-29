@@ -79,6 +79,15 @@ export function searchUnitUsd(provider: Provider): number {
 //             caches; wired anyway for correctness if that changes)
 //   Google  Gemini context cache ≈ 0.25×
 //   Groq    no prompt caching → 1.0× (cached count is always 0 anyway)
+// Writing a prompt into the cache costs MORE than not caching at all: 1.25× the
+// input rate at the 5-minute TTL (2× at the 1-hour TTL). Providers report those
+// tokens in a separate field, and a receipt that ignores it would drop real
+// billed tokens on the floor — the mirror image of the cache-read overcharge.
+// We deliberately send no cache_control (see the note on cacheMultiplier), so
+// this is currently always zero; it is wired so the arithmetic stays correct if
+// that ever changes rather than becoming a silent undercount.
+export const CACHE_WRITE_MULTIPLIER = 1.25;
+
 export function cacheMultiplier(provider: Provider): number {
   switch (provider) {
     case "openai":    return 0.10;
@@ -317,6 +326,7 @@ export interface Usage {
   inputTokens: number;       // TOTAL prompt tokens (cached + uncached)
   outputTokens: number;      // completion tokens (includes reasoning where the provider folds it in)
   cachedInputTokens?: number; // the cache-hit portion of inputTokens, billed at the cache rate
+  cacheWriteTokens?: number;  // the portion written INTO the cache, billed ABOVE the input rate
 }
 
 export interface Receipt {
@@ -328,6 +338,8 @@ export interface Receipt {
   uncachedInputTokens: number; // input billed at full rate
   cachedInputTokens: number;   // input billed at the cache rate (cache-hits)
   cacheRatePerM: number;       // the cache-read rate applied to cached tokens
+  cacheWriteTokens: number;    // input written into the cache (billed above full rate)
+  cacheWriteRatePerM: number;  // the cache-write rate applied to those tokens
   groundingUsd: number;  // retrieval surcharge (0 when ungrounded)
   searchRequests: number;  // how many real searches were billed
   searchUnitUsd: number;   // price per search for THIS provider
@@ -349,12 +361,17 @@ export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0, 
   // Split input into cache-hits (billed cheap) and uncached (billed full), exactly
   // as the provider does. Billing everything at the full input rate over-charged
   // long/grounded/recall-heavy queries, where most of the context is cached.
+  // Input splits three ways, each billed at its own rate: cache-hits (cheap),
+  // cache-writes (dearer than uncached), and everything else at the full rate.
   const cached = Math.max(0, Math.min(usage.cachedInputTokens ?? 0, usage.inputTokens));
-  const uncached = usage.inputTokens - cached;
+  const written = Math.max(0, Math.min(usage.cacheWriteTokens ?? 0, usage.inputTokens - cached));
+  const uncached = usage.inputTokens - cached - written;
   const cacheRatePerM = usd(inPerM * cacheMultiplier(spec.provider));
+  const cacheWriteRatePerM = usd(inPerM * CACHE_WRITE_MULTIPLIER);
   const direct = usd(
     (uncached / 1_000_000) * inPerM +
     (cached / 1_000_000) * cacheRatePerM +
+    (written / 1_000_000) * cacheWriteRatePerM +
     (usage.outputTokens / 1_000_000) * outPerM,
   );
   // Retrieval is priced per search, and the rate depends on WHO searched:
@@ -374,6 +391,8 @@ export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0, 
     uncachedInputTokens: uncached,
     cachedInputTokens: cached,
     cacheRatePerM,
+    cacheWriteTokens: written,
+    cacheWriteRatePerM,
     groundingUsd: grounding,
     searchRequests,
     searchUnitUsd: searchUnit,

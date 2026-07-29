@@ -434,11 +434,16 @@ async function callAnthropic(
   const data = await res.json();
   // Anthropic reports input_tokens as the UNCACHED count; cache reads are separate.
   // We send no cache_control, so cache_read is 0 — wired for correctness anyway.
+  // Anthropic's input_tokens is the UNCACHED remainder only — the real prompt is
+  // input_tokens + cache_read + cache_creation. Reading only two of the three
+  // would drop billed tokens from the receipt entirely.
   const cacheRead = data.usage?.cache_read_input_tokens ?? 0;
+  const cacheWrite = data.usage?.cache_creation_input_tokens ?? 0;
   const usage: Usage = {
-    inputTokens: (data.usage?.input_tokens ?? 0) + cacheRead,
+    inputTokens: (data.usage?.input_tokens ?? 0) + cacheRead + cacheWrite,
     outputTokens: data.usage?.output_tokens ?? 0,
     cachedInputTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
   };
   // A safety decline arrives as HTTP 200 with stop_reason "refusal" and empty
   // content. Check stop_reason BEFORE reading content, or the gate throws on a
