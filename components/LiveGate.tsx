@@ -4,7 +4,7 @@
 // provider, cost-plus receipts, SHA-256 hashes, timings. The bias gate is
 // NOT wired yet and is labeled as such — no simulated numbers in this mode.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fmtUsd } from "@/lib/pricing";
 
 // ── Types mirrored from /api/chat ─────────────────────────────────────────
@@ -395,6 +395,50 @@ function recallMemories(
     .slice(0, k)
     .map(x => x.m);
 }
+
+// ── Pre-send cost estimate ──────────────────────────────────────────────
+// Grounded retrieval stacks tens of thousands of tokens of fetched pages into
+// the input at the model's own rate, so the SAME question has cost $0.11 and
+// $1.01 on this gate depending on how much the model chose to read. Publishing
+// one confident predicted number would be a false promise from a product whose
+// entire claim is that the receipt is the truth.
+//
+// So the estimate is drawn from receipts this browser has already been charged:
+// the real range this model actually cost in this mode. Arithmetic is only the
+// fallback when there is no such history, and then it says plainly that
+// retrieval is not in the number.
+
+// Past charged totals for a model+grounding combination, newest-agnostic and
+// deduped by seal root (the live session is also mirrored into the archive).
+function pastCosts(modelId: string, grounded: boolean, thread: Exchange[]): number[] {
+  const seen = new Set<string>();
+  const out: number[] = [];
+  const add = (root: string | undefined, usd: unknown) => {
+    if (!root || seen.has(root)) return;
+    if (typeof usd !== "number" || !isFinite(usd) || usd <= 0) return;
+    seen.add(root);
+    out.push(usd);
+  };
+  thread.forEach(ex => {
+    if (ex.modelId === modelId && (ex.grounded ?? false) === grounded) add(ex.seal?.root, ex.receipt?.totalUsd);
+  });
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ARCHIVE_KEY) ?? "null");
+    const sessions: Array<{ exchanges?: unknown[] }> = Array.isArray(parsed?.sessions) ? parsed.sessions : [];
+    sessions.forEach(s => {
+      (s?.exchanges ?? []).forEach(raw => {
+        const ex = raw as { model?: string; grounded?: boolean; receipt?: { totalUsd?: unknown }; seal?: { root?: string } };
+        if (ex?.model === modelId && !!ex?.grounded === grounded) add(ex.seal?.root, ex.receipt?.totalUsd);
+      });
+    });
+  } catch { /* archive unreadable — fall through to the computed estimate */ }
+  return out;
+}
+
+// Rough token count for text we are about to send. ~4 chars/token for English
+// prose; deliberately approximate, and only ever used for the no-history case.
+const approxTokens = (chars: number) => Math.ceil(chars / 4);
+const TYPICAL_OUTPUT_TOKENS = 700;
 
 // Relative age for the recall preview — users reason in "18m ago", not ISO.
 function agoLabel(ts: string): string {
@@ -792,6 +836,29 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
   // open when the daily free quota is spent. (Free resets 00:00 UTC.)
   const creditsActive = !!(wallet && wallet.balanceUsd > 0.0001);
   const gateOpen = remaining !== 0 || creditsActive;
+
+  // Will THIS turn actually cost money? Premium is credits-only and always
+  // charges; a free-council model only charges once the daily free tier is
+  // spent and a funded wallet takes over. No charge, no estimate to show.
+  const willCharge = !!model && (model.tier === "premium" || (remaining === 0 && creditsActive));
+
+  const estimate = useMemo(() => {
+    if (!model || !willCharge || !input.trim()) return null;
+    const samples = pastCosts(model.id, groundOn, thread);
+    if (samples.length > 0) {
+      return { kind: "history" as const, lo: Math.min(...samples), hi: Math.max(...samples), n: samples.length };
+    }
+    // No receipts for this combination yet — price what we can actually count
+    // (this prompt, the history and memories riding with it, any attachment)
+    // and be explicit that retrieved pages are not in the number.
+    const historyChars = thread.slice(-3).reduce((n, ex) => n + ex.query.length + ex.response.length, 0);
+    const memChars = (recallOff ? [] : memPreview).reduce((n, m) => n + m.query.length + m.response.length, 0);
+    const chars = input.length + historyChars + memChars + (attachment?.text.length ?? 0);
+    const direct =
+      (approxTokens(chars) / 1e6) * model.inPerM +
+      (TYPICAL_OUTPUT_TOKENS / 1e6) * model.outPerM;
+    return { kind: "computed" as const, usd: direct * 1.20 };
+  }, [model, willCharge, input, thread, groundOn, memPreview, recallOff, attachment]);
 
   // Conversion moment: the instant free runs out, show the buy row.
   useEffect(() => {
@@ -1465,6 +1532,49 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
             ))}
           </div>
         )}
+
+        {/* Pre-send cost. Grounded premium has run from $0.11 to $1.01 for the
+            same question, so this quotes real past receipts where they exist
+            rather than inventing a single confident number. */}
+        {estimate && gateOpen && (() => {
+          const over = estimate.kind === "history" && creditsActive && wallet && estimate.hi > wallet.balanceUsd;
+          return (
+            <div style={{
+              fontFamily: "monospace", fontSize: 9, lineHeight: 1.7, marginBottom: 6,
+              padding: "5px 8px",
+              border: `1px solid ${over ? "rgba(231,76,60,0.4)" : "rgba(200,148,26,0.28)"}`,
+              background: over ? "rgba(231,76,60,0.05)" : "rgba(200,148,26,0.05)",
+              color: over ? "#e74c3c" : "#c8941a",
+            }}>
+              {estimate.kind === "history" ? (
+                <>
+                  <span style={{ letterSpacing: "0.1em" }}>
+                    💰 {estimate.lo === estimate.hi
+                      ? `≈ ${fmtUsd(estimate.hi)}`
+                      : `${fmtUsd(estimate.lo)} – ${fmtUsd(estimate.hi)}`}
+                  </span>
+                  <span style={{ opacity: 0.72 }}>
+                    {" — what "}{model?.name}{groundOn ? " grounded" : ""}{" actually cost you across "}
+                    {estimate.n} past {estimate.n === 1 ? "answer" : "answers"}
+                    {over ? ` · MAY EXCEED YOUR $${wallet!.balanceUsd.toFixed(2)} BALANCE` : ""}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span style={{ letterSpacing: "0.1em" }}>
+                    💰 {groundOn ? "≥ " : "≈ "}{fmtUsd(estimate.usd)}
+                  </span>
+                  <span style={{ opacity: 0.72 }}>
+                    {" — from published rates and this prompt; no receipts for "}
+                    {model?.name}{groundOn ? " grounded" : ""}{" yet"}
+                    {groundOn ? " · RETRIEVED PAGES ARE BILLED ON TOP AND VARY WIDELY" : ""}
+                  </span>
+                </>
+              )}
+              <span style={{ opacity: 0.45 }}>{" · estimate — the receipt is the truth"}</span>
+            </div>
+          );
+        })()}
 
         {/* input */}
         <div className="flex gap-2 pb-3">
