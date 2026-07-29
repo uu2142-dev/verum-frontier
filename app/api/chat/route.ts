@@ -450,16 +450,28 @@ async function callAnthropic(
       usage,
       truncated: false,
       sources: [] as GroundingSource[],
+      searchQueries: [] as string[],
       searchRequests: 0,
     };
   }
-  const blocks: Array<{ type?: string; text?: string; content?: unknown }> = data.content ?? [];
+  const blocks: Array<{ type?: string; text?: string; content?: unknown; input?: unknown }> = data.content ?? [];
   const text = blocks.filter(b => b.type === "text").map(b => b.text ?? "").join("").trim();
 
   // First-hand citations: the model's own search results, deduped by URL.
   const sources: GroundingSource[] = [];
   const seenUrls = new Set<string>();
+  // ...and what the model actually searched FOR. Sealing sources without the
+  // queries hides why a grounded answer went where it did — a wrong-topic
+  // search reads as a plausible answer until you see the query beside it.
+  const searchQueries: string[] = [];
   for (const b of blocks) {
+    if (b.type === "server_tool_use") {
+      const q = (b.input as { query?: unknown } | undefined)?.query;
+      if (typeof q === "string" && q.trim() && !searchQueries.includes(q.trim())) {
+        searchQueries.push(q.trim());
+      }
+      continue;
+    }
     if (b.type !== "web_search_tool_result" || !Array.isArray(b.content)) continue;
     for (const r of b.content as Array<{ url?: string; title?: string }>) {
       if (!r?.url || seenUrls.has(r.url)) continue;
@@ -474,7 +486,7 @@ async function callAnthropic(
   // pause_turn = the server-side tool loop hit its cap mid-task. The answer is
   // incomplete, so label it rather than presenting a stopped answer as finished.
   const truncated = data.stop_reason === "max_tokens" || data.stop_reason === "pause_turn";
-  return { text, usage, truncated, sources, searchRequests };
+  return { text, usage, truncated, sources, searchQueries, searchRequests };
 }
 
 // OpenAI and xAI both speak the OpenAI chat-completions shape, so one adapter
@@ -563,6 +575,9 @@ async function callOpenAICompatible(
     usage,
     truncated: data.choices?.[0]?.finish_reason === "length",
     sources,
+    // Chat Completions reports citations but never the queries behind them —
+    // empty here is the honest answer, not a missing feature.
+    searchQueries: [] as string[],
     searchRequests,
     searchCountExact,
   };
@@ -622,13 +637,24 @@ async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], mem
   }
   const data = await res.json();
 
-  const items: Array<{ type?: string; content?: unknown }> = Array.isArray(data.output) ? data.output : [];
+  const items: Array<{ type?: string; content?: unknown; action?: unknown }> = Array.isArray(data.output) ? data.output : [];
   let text = "";
   const sources: GroundingSource[] = [];
   const seen = new Set<string>();
+  // The query each web_search_call actually ran, when the provider reports it —
+  // sealed alongside the sources so a grounded answer can be audited for whether
+  // it searched the right thing, not just which pages it landed on.
+  const searchQueries: string[] = [];
   let searchRequests = 0;
   for (const it of items) {
-    if (it.type === "web_search_call") { searchRequests += 1; continue; }
+    if (it.type === "web_search_call") {
+      searchRequests += 1;
+      const q = (it.action as { query?: unknown } | undefined)?.query;
+      if (typeof q === "string" && q.trim() && !searchQueries.includes(q.trim())) {
+        searchQueries.push(q.trim());
+      }
+      continue;
+    }
     if (it.type !== "message" || !Array.isArray(it.content)) continue;
     for (const c of it.content as Array<{ type?: string; text?: string; annotations?: Array<{ type?: string; url?: string; title?: string }> }>) {
       if (typeof c.text === "string") text += c.text;
@@ -667,7 +693,7 @@ async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], mem
     cachedInputTokens: cachedIn,
   };
   const truncated = data.status === "incomplete";
-  return { text, usage, truncated, sources, searchRequests };
+  return { text, usage, truncated, sources, searchQueries, searchRequests };
 }
 
 // ── GET: model registry + quota status (client boot) ────────────────────
@@ -894,7 +920,7 @@ export async function POST(req: Request) {
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
       searchRequests = out.searchRequests;
       if (groundingRequested && out.sources.length) {
-        grounding = { sources: out.sources, searchQueries: [] };
+        grounding = { sources: out.sources, searchQueries: out.searchQueries ?? [] };
       }
     } else if (callSpec.provider === "openai") {
       // OpenAI grounds only on the Responses API; the proven Chat Completions
@@ -905,7 +931,7 @@ export async function POST(req: Request) {
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
       searchRequests = out.searchRequests;
       if (groundingRequested && out.sources.length) {
-        grounding = { sources: out.sources, searchQueries: [] };
+        grounding = { sources: out.sources, searchQueries: out.searchQueries ?? [] };
       }
     } else if (callSpec.provider === "xai") {
       // xAI grounds via its Agent Tools API (Responses surface) — the old
@@ -917,7 +943,7 @@ export async function POST(req: Request) {
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
       searchRequests = out.searchRequests;
       if (groundingRequested && out.sources.length) {
-        grounding = { sources: out.sources, searchQueries: [] };
+        grounding = { sources: out.sources, searchQueries: out.searchQueries ?? [] };
       }
     } else {
       const out = callSpec.provider === "groq"

@@ -140,6 +140,13 @@ function buildSessionPayload(startedAt: string, exchanges: Exchange[], chainRoot
       groundingRequested: ex.groundingRequested ?? false,
       groundingMode: ex.groundingMode ?? "off",
       grounding: ex.grounding ?? null,
+      // The seal carries MEMORY and DOCUMENT leaves, so omitting these from the
+      // export left two leaves whose preimage the holder never receives: the
+      // file instructed a verifier to recompute content leaves it had no way to
+      // recompute, and no reader could audit WHICH past exchanges shaped an
+      // answer. Recall picking the wrong prior session is invisible without this.
+      memoryRecall: ex.memoryRecall ?? null,
+      attachmentMeta: ex.attachmentMeta ?? null,
       seal: ex.seal,
       timingMs: ex.timingMs,
       sessionChainHash: ex.chainHash,
@@ -164,6 +171,16 @@ function buildSessionPayload(startedAt: string, exchanges: Exchange[], chainRoot
       "seal you must recompute the content leaves and confirm they appear in seal.leaves: " +
       "QUERY = SHA-256(JSON.stringify({q: <query>, ts: <seal.sealedAt>})), " +
       "RESPONSE = SHA-256(JSON.stringify({r: <response>, model: <model>})). " +
+      // The other content leaves are only present when that kind of content rode
+      // the turn. Their preimages are documented too, so every leaf in the file
+      // can be recomputed rather than taken on trust.
+      "Where present: " +
+      "SOURCES = SHA-256(JSON.stringify(<grounding.sources URIs, in order>)), " +
+      "MEMORY = SHA-256(JSON.stringify(<memoryRecall.roots>)), " +
+      "DOCUMENT = SHA-256(JSON.stringify({name: <attachment name>, doc: <full attachment text>})) " +
+      "— the attachment's text is NOT included in this export (it is yours and can be large), " +
+      "so DOCUMENT is verifiable only against your own copy of the file you attached; " +
+      "attachmentMeta records its name and character count. " +
       "Serialization is JSON.stringify semantics: keys in the order given, no whitespace, " +
       "non-ASCII characters NOT escaped, hashed as UTF-8. Without this step, altering the " +
       "visible text is undetectable. A pure-stdlib reference verifier that performs all " +
