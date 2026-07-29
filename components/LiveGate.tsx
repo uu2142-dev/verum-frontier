@@ -280,24 +280,75 @@ function recallTokens(s: string): Set<string> {
   );
 }
 
-function recallMemories(queryText: string, memory: MemoryItem[], excludeRoots: Set<string>, k = 3): MemoryItem[] {
+// Recall scoring. A raw shared-word count has two failure modes that showed up
+// in a real session: a query about a subject discussed 18 minutes earlier was
+// answered from a five-day-old session instead, on a premium model, grounded —
+// one wrong answer for a dollar. Two corrections:
+//
+//   1. IDF weighting. Vocabulary the user employs constantly ("assessment",
+//      "report") appears in nearly every memory and carries almost no signal;
+//      a rare word ("caspian") is what actually identifies the right session.
+//      Weighting each match by rarity stops generic words from deciding.
+//   2. Recency weighting, not just a tiebreak. Previously recency only settled
+//      exact score ties, so a stale memory beat a minutes-old one on the same
+//      subject. An older memory must now be materially more relevant to win.
+//
+// Both are advisory ranking only — the server still verifies every recalled
+// memory's Ed25519 seal before injecting it.
+const RECALL_HALF_LIFE_HOURS = 72; // relevance halves every 3 days...
+const RECALL_RECENCY_FLOOR = 0.4;  // ...but never decays below 40% of its score
+
+function recallMemories(
+  queryText: string,
+  memory: MemoryItem[],
+  excludeRoots: Set<string>,
+  k = 3,
+  now: number = Date.now(),
+): MemoryItem[] {
   const q = recallTokens(queryText);
   if (!q.size) return [];
-  return memory
-    .filter(m => !excludeRoots.has(m.root))
-    .map(m => {
-      const t = recallTokens(m.query + " " + m.response);
-      let overlap = 0;
-      q.forEach(w => { if (t.has(w)) overlap += 1; });
-      return { m, overlap };
+  const pool = memory.filter(m => !excludeRoots.has(m.root));
+  if (!pool.length) return [];
+
+  const toks = pool.map(m => recallTokens(m.query + " " + m.response));
+  // Document frequency of each query word across the pool → inverse-frequency
+  // weight. A word in every memory scores ~0; a word in one scores highest.
+  const idf = new Map<string, number>();
+  q.forEach(w => {
+    let df = 0;
+    toks.forEach(t => { if (t.has(w)) df += 1; });
+    idf.set(w, Math.log(1 + pool.length / (1 + df)));
+  });
+  let maxWeight = 0;
+  q.forEach(w => { maxWeight += idf.get(w) ?? 0; });
+  if (maxWeight <= 0) maxWeight = 1;
+
+  return pool
+    .map((m, i) => {
+      let matched = 0, weight = 0;
+      q.forEach(w => { if (toks[i].has(w)) { matched += 1; weight += idf.get(w) ?? 0; } });
+      const parsed = Date.parse(m.ts);
+      const ageHours = Number.isFinite(parsed) ? Math.max(0, (now - parsed) / 3.6e6) : Infinity;
+      const decay = Math.pow(0.5, ageHours / RECALL_HALF_LIFE_HOURS); // → 0 when age is Infinity
+      const recency = RECALL_RECENCY_FLOOR + (1 - RECALL_RECENCY_FLOOR) * (Number.isFinite(decay) ? decay : 0);
+      return { m, matched, score: (weight / maxWeight) * recency };
     })
-    // A single strong content-word match is enough — natural follow-ups
-    // ("what about the second part?") rarely repeat two keywords. Ties break
-    // toward the most recent memory.
-    .filter(x => x.overlap >= 1)
-    .sort((a, b) => b.overlap - a.overlap || b.m.ts.localeCompare(a.m.ts))
+    // A single strong content-word match is still enough — natural follow-ups
+    // ("what about the second part?") rarely repeat two keywords.
+    .filter(x => x.matched >= 1)
+    .sort((a, b) => b.score - a.score || b.m.ts.localeCompare(a.m.ts))
     .slice(0, k)
     .map(x => x.m);
+}
+
+// Relative age for the recall preview — users reason in "18m ago", not ISO.
+function agoLabel(ts: string): string {
+  const t = Date.parse(ts);
+  if (!Number.isFinite(t)) return "";
+  const mins = Math.max(0, (Date.now() - t) / 60000);
+  if (mins < 60) return `${Math.round(mins)}m ago`;
+  if (mins < 1440) return `${Math.round(mins / 60)}h ago`;
+  return `${Math.round(mins / 1440)}d ago`;
 }
 
 async function sha256Hex(s: string): Promise<string> {
@@ -497,11 +548,27 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
   const [attachPinned, setAttachPinned] = useState(false);
   const [lastAttachment, setLastAttachment] = useState<{ name: string; text: string } | null>(null);
   const [pasteBuf, setPasteBuf] = useState("");
+  // Which sealed memories THIS query would pull in, shown before anything is
+  // spent, plus an opt-out for the turn. Recall used to be invisible until the
+  // answer came back — a wrong pick was only discoverable after paying for it.
+  const [memPreview, setMemPreview] = useState<MemoryItem[]>([]);
+  const [recallOff, setRecallOff] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const chainRef   = useRef<string>("");
   const startedRef = useRef<string>("");
   const nextId     = useRef(1);
   const scrollRef  = useRef<HTMLDivElement>(null);
+
+  // Debounced so a 300-item archive isn't re-scored on every keystroke.
+  useEffect(() => {
+    const q = input.trim();
+    if (!q) { setMemPreview([]); return; }
+    const id = setTimeout(() => {
+      const exclude = new Set(thread.slice(-3).map(ex => ex.seal.root));
+      setMemPreview(recallMemories(q, loadMemory(), exclude));
+    }, 250);
+    return () => clearTimeout(id);
+  }, [input, thread]);
 
   useEffect(() => {
     setMemCount(loadMemory().length);
@@ -656,7 +723,9 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
         { role: "assistant" as const, content: ex.response },
       ]));
       const excludeRoots = new Set(recent.map(ex => ex.seal.root));
-      const recalled = recallMemories(q, loadMemory(), excludeRoots);
+      // RECALL OFF sends this turn with no injected memories — the preview above
+      // the composer is what the user is agreeing to, so honour a skip exactly.
+      const recalled = recallOff ? [] : recallMemories(q, loadMemory(), excludeRoots);
       const routed = routerMode ? routeQuery(q, routerMode, models) : null;
       const sendModelId = routed ? routed.modelId : modelId;
       const res = await fetch("/api/chat", {
@@ -734,6 +803,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
         });
       }
       setInput("");
+      setRecallOff(false); // opt-out is per-turn, never sticky
     } catch {
       setError("Network error — the query was not charged against your quota.");
     } finally {
@@ -1180,6 +1250,39 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
                 background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 11,
               }}>✕</button>
             </span>
+          </div>
+        )}
+
+        {/* Recall preview — what this query will pull from the sealed archive,
+            shown BEFORE sending so a wrong pick costs nothing to catch. */}
+        {memPreview.length > 0 && gateOpen && (
+          <div style={{
+            fontFamily: "monospace", fontSize: 9, lineHeight: 1.7, marginBottom: 6,
+            padding: "6px 8px",
+            border: `1px solid ${recallOff ? "rgba(255,255,255,0.10)" : "rgba(179,157,219,0.35)"}`,
+            background: recallOff ? "transparent" : "rgba(179,157,219,0.07)",
+            color: recallOff ? "rgba(255,255,255,0.3)" : "rgba(179,157,219,0.9)",
+          }}>
+            <div className="flex items-center justify-between gap-3">
+              <span style={{ letterSpacing: "0.12em" }}>
+                🧠 {recallOff ? "RECALL OFF — no memories will be sent" : `WILL RECALL ${memPreview.length} SEALED ${memPreview.length === 1 ? "MEMORY" : "MEMORIES"}`}
+              </span>
+              <button
+                onClick={() => setRecallOff(o => !o)}
+                style={{
+                  fontFamily: "monospace", fontSize: 8, cursor: "pointer", padding: "1px 6px",
+                  letterSpacing: "0.1em", background: "transparent",
+                  border: "1px solid rgba(255,255,255,0.2)",
+                  color: recallOff ? "#b39ddb" : "rgba(255,255,255,0.45)",
+                }}
+              >{recallOff ? "USE RECALL" : "SKIP"}</button>
+            </div>
+            {!recallOff && memPreview.map(m => (
+              <div key={m.root} style={{ opacity: 0.75, paddingLeft: 14 }}>
+                · <span style={{ opacity: 0.6 }}>{agoLabel(m.ts)}</span>{" — "}
+                {m.query.length > 84 ? m.query.slice(0, 84) + "…" : m.query}
+              </div>
+            ))}
           </div>
         )}
 
