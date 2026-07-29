@@ -209,6 +209,44 @@ function saveWallet(w: WalletState | null) {
   } catch { /* ignore */ }
 }
 
+// ── Wallet link codes ───────────────────────────────────────────────────
+// The balance lives in the ledger; only the credential is device-local, which
+// is why credits appeared to "not exist" on a phone after being bought on a
+// desktop. A link code is just that credential, encoded to survive a copy-paste
+// — so moving it moves the credits, with no account and no server-side identity.
+// It is a BEARER credential: whoever holds it can spend the balance, and the UI
+// says so plainly before revealing one.
+
+function b64urlEncode(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  bytes.forEach(b => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function b64urlDecode(s: string): string {
+  const t = s.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(t + "=".repeat((4 - (t.length % 4)) % 4));
+  return new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
+}
+
+function encodeLinkCode(w: WalletState): string {
+  return "VFW1." + b64urlEncode(JSON.stringify({ i: w.id, t: w.token }));
+}
+
+function decodeLinkCode(code: string): { id: string; token: string } | null {
+  const m = /^VFW1\.([A-Za-z0-9_-]+)$/.exec(code.trim());
+  if (!m) return null;
+  try {
+    const o = JSON.parse(b64urlDecode(m[1]));
+    return (typeof o?.i === "string" && typeof o?.t === "string" && o.i && o.t)
+      ? { id: o.i, token: o.t }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 interface StoredSession {
   format: 1;
   startedAt: string;
@@ -538,6 +576,11 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
   const [payments, setPayments] = useState<{ enabled: boolean; testMode: boolean }>({ enabled: false, testMode: false });
   const [wallet, setWallet] = useState<WalletState | null>(null);
   const [buyOpen, setBuyOpen] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);   // reveal THIS device's code
+  const [linkPaste, setLinkPaste] = useState("");    // adopt another device's
+  const [linkArmed, setLinkArmed] = useState(false); // 2-step when replacing funds
+  const [linking, setLinking] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [buying, setBuying] = useState(false);
   const [claimNote, setClaimNote] = useState<string | null>(null);
   const [routerMode, setRouterMode] = useState<RouterMode>(null);
@@ -685,6 +728,36 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
       setBuying(false);
     }
   }, []);
+
+  // Adopt a wallet issued on another device. The ledger is the authority: we
+  // hand it the pasted credential and only store it here if it comes back valid.
+  const linkDevice = useCallback(async () => {
+    const parsed = decodeLinkCode(linkPaste);
+    if (!parsed) {
+      setClaimNote("✗ That is not a wallet link code — it should start with VFW1.");
+      return;
+    }
+    setLinking(true);
+    try {
+      const res = await fetch("/api/credits/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(parsed),
+      });
+      const d = await res.json();
+      if (!res.ok) { setClaimNote(`✗ ${d.error ?? "Link failed."}`); return; }
+      const w = { id: parsed.id, token: parsed.token, balanceUsd: d.balanceUsd };
+      saveWallet(w);
+      setWallet(w);
+      setLinkPaste("");
+      setLinkArmed(false);
+      setClaimNote(`✓ Wallet linked — $${d.balanceUsd.toFixed(4)} available on this device.`);
+    } catch {
+      setClaimNote("✗ Network error — wallet not linked.");
+    } finally {
+      setLinking(false);
+    }
+  }, [linkPaste]);
 
   const newSession = useCallback(() => {
     try { localStorage.removeItem(STORE_KEY); } catch { /* ignore */ }
@@ -916,6 +989,96 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
                 STRIPE TEST MODE — no real charges. Test card 4242 4242 4242 4242, any future expiry, any CVC.
               </span>
             )}
+
+            {/* Device linking. No accounts means a wallet lives where it was
+                claimed; the balance itself is in the ledger, so handing the
+                credential to another device hands it the credits. */}
+            <div style={{
+              width: "100%", borderTop: "1px solid rgba(255,255,255,0.1)",
+              paddingTop: 8, marginTop: 2, display: "flex", flexDirection: "column", gap: 6,
+            }}>
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <span style={{ fontSize: 8, letterSpacing: "0.15em", color: "rgba(255,255,255,0.5)" }}>
+                  CREDITS FOLLOW THE WALLET, NOT THE BROWSER — link a phone or laptop to spend the same balance
+                </span>
+                {wallet && (
+                  <button
+                    onClick={() => { setLinkOpen(o => !o); setCopied(false); }}
+                    style={{
+                      fontSize: 8, fontFamily: "monospace", cursor: "pointer", padding: "3px 10px",
+                      letterSpacing: "0.1em", border: "1px solid rgba(200,148,26,0.5)",
+                      background: "transparent", color: "#c8941a",
+                    }}
+                  >{linkOpen ? "HIDE CODE" : "LINK ANOTHER DEVICE"}</button>
+                )}
+              </div>
+
+              {linkOpen && wallet && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ fontSize: 8, color: "#e74c3c", letterSpacing: "0.06em" }}>
+                    ⚠ BEARER CODE — anyone who has it can spend your ${wallet.balanceUsd.toFixed(2)}. Send it to yourself only, and treat it like cash.
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      readOnly
+                      value={encodeLinkCode(wallet)}
+                      onFocus={e => e.currentTarget.select()}
+                      style={{
+                        flex: 1, fontFamily: "monospace", fontSize: 9, padding: "4px 6px",
+                        background: "rgba(0,0,0,0.4)", color: "rgba(255,255,255,0.75)",
+                        border: "1px solid rgba(255,255,255,0.15)",
+                      }}
+                    />
+                    <button
+                      onClick={() => {
+                        navigator.clipboard?.writeText(encodeLinkCode(wallet)).then(
+                          () => setCopied(true),
+                          () => setCopied(false),
+                        );
+                      }}
+                      style={{
+                        fontSize: 8, fontFamily: "monospace", cursor: "pointer", padding: "4px 10px",
+                        letterSpacing: "0.1em", border: "1px solid rgba(200,148,26,0.5)",
+                        background: "rgba(200,148,26,0.12)", color: "#c8941a",
+                      }}
+                    >{copied ? "COPIED" : "COPY"}</button>
+                  </div>
+                  <div style={{ fontSize: 8, color: "rgba(255,255,255,0.35)" }}>
+                    On the other device: open this panel and paste the code below. The balance is not copied — both devices spend the same wallet.
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <input
+                  value={linkPaste}
+                  onChange={e => { setLinkPaste(e.target.value); setLinkArmed(false); }}
+                  placeholder="Paste a wallet link code from another device (VFW1.…)"
+                  style={{
+                    flex: 1, fontFamily: "monospace", fontSize: 9, padding: "4px 6px",
+                    background: "rgba(0,0,0,0.3)", color: "rgba(255,255,255,0.8)",
+                    border: "1px solid rgba(255,255,255,0.15)",
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    // Replacing a funded wallet needs a second click: the old
+                    // balance stays in the ledger, but only its own code reaches it.
+                    if (wallet && wallet.balanceUsd > 0 && !linkArmed) { setLinkArmed(true); return; }
+                    linkDevice();
+                  }}
+                  disabled={linking || !linkPaste.trim()}
+                  style={{
+                    fontSize: 8, fontFamily: "monospace", letterSpacing: "0.1em", padding: "4px 10px",
+                    cursor: linking || !linkPaste.trim() ? "default" : "pointer",
+                    border: `1px solid ${linkArmed ? "rgba(231,76,60,0.6)" : "rgba(255,255,255,0.2)"}`,
+                    background: linkArmed ? "rgba(231,76,60,0.12)" : "transparent",
+                    color: linkArmed ? "#e74c3c" : "rgba(255,255,255,0.6)",
+                    opacity: linking || !linkPaste.trim() ? 0.4 : 1,
+                  }}
+                >{linking ? "LINKING…" : linkArmed ? `REPLACE $${wallet?.balanceUsd.toFixed(2)} WALLET?` : "LINK"}</button>
+              </div>
+            </div>
           </div>
         )}
 
