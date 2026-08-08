@@ -1184,7 +1184,10 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
         )}
 
         {/* messages */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto pr-1" style={{ scrollbarWidth: "thin" }}>
+        {/* Answers arrive asynchronously; without a live region a screen reader
+            never announces them and the gate looks silent after SEND. */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto pr-1" style={{ scrollbarWidth: "thin" }}
+             role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation transcript">
           {thread.length === 0 && !sending && (
             <div style={{
               fontFamily: "monospace", color: "rgba(255,255,255,0.55)", fontSize: 11,
@@ -1256,11 +1259,32 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
                         border: "1px solid rgba(88,166,255,0.4)", background: "rgba(88,166,255,0.07)",
                         color: "#58a6ff", lineHeight: 1.7, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center",
                       }}>
-                        <span>🔎 GROUNDED · {ex.grounding?.sources.length ?? 0} source{(ex.grounding?.sources.length ?? 0) === 1 ? "" : "s"} via Google Search:</span>
-                        {(ex.grounding?.sources ?? []).slice(0, 6).map((s, i) => (
-                          <a key={i} href={s.uri} target="_blank" rel="noopener noreferrer"
-                             style={{ color: "rgba(88,166,255,0.85)", textDecoration: "underline" }}>{s.title || sourceHost(s.uri)}</a>
-                        ))}
+                        {(() => {
+                          // The count and the chips must agree. This header used to print
+                          // sources.length while rendering a hardcoded first six — a
+                          // visible count mismatch on a product about receipts. It also
+                          // said "via Google Search" for every grounded answer, including
+                          // ones the model retrieved first-hand through its own provider.
+                          const srcs = ex.grounding?.sources ?? [];
+                          const shown = srcs.slice(0, 6);
+                          const who = ex.groundingMode === "native"
+                            ? `retrieved first-hand by ${models.find(m => m.id === ex.modelId)?.name ?? ex.modelId}`
+                            : "via Gemini + Google Search";
+                          return (
+                            <>
+                              <span>
+                                🔎 GROUNDED · {srcs.length} source{srcs.length === 1 ? "" : "s"} {who}
+                                {srcs.length > shown.length
+                                  ? ` · showing ${shown.length}, all ${srcs.length} in the receipt:`
+                                  : ":"}
+                              </span>
+                              {shown.map((s, i) => (
+                                <a key={i} href={s.uri} target="_blank" rel="noopener noreferrer"
+                                   style={{ color: "rgba(88,166,255,0.85)", textDecoration: "underline" }}>{s.title || sourceHost(s.uri)}</a>
+                              ))}
+                            </>
+                          );
+                        })()}
                       </div>
                     ) : (
                       <div style={{ marginTop: 6, fontFamily: "monospace", fontSize: 7.5, color: "rgba(255,255,255,0.3)", letterSpacing: "0.03em" }}>
@@ -1280,6 +1304,8 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
                     {/* receipt summary line */}
                     <button
                       onClick={() => setExpanded(open ? null : ex.id)}
+                      aria-expanded={open}
+                      aria-label={`${open ? "Hide" : "Show"} the full cost-plus receipt, bias screen and Merkle seal for this answer`}
                       style={{
                         marginTop: 8, background: "none", border: "none", cursor: "pointer",
                         fontSize: 8, fontFamily: "monospace", color: "rgba(255,255,255,0.4)",
@@ -1314,7 +1340,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
 
         {/* error */}
         {error && (
-          <div style={{
+          <div role="alert" aria-live="assertive" style={{
             fontFamily: "monospace", fontSize: 9, color: "#e74c3c",
             border: "1px solid rgba(231,76,60,0.35)", background: "rgba(231,76,60,0.06)",
             padding: "6px 10px", marginBottom: 6,
@@ -1368,16 +1394,22 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
             const active = !routerMode && modelId === m.id;
             const premium = m.tier === "premium";
             const locked = premium && !creditsActive;
+            // The same sentence goes to title AND aria-label: a native tooltip is
+            // unreachable by keyboard and touch, so on its own it hides the
+            // credits-only rule from exactly the users who most need it stated.
+            const explain = premium
+              ? `${m.name} — premium, credits only. ${locked
+                  ? "Add credits to unlock it; the free council stays free."
+                  : "Paid from your credits at exact cost-plus, receipted like everything else."}`
+              : `${m.name} — free council.`;
             return (
               <button key={m.id} onClick={() => {
                   setModelId(m.id); setRouterMode(null);
                   try { localStorage.setItem(MODEL_KEY, m.id); } catch { /* ignore */ }
                 }}
-                title={premium
-                  ? `${m.name} — premium, credits only. ${locked
-                      ? "Add credits to unlock it; the free council stays free."
-                      : "Paid from your credits at exact cost-plus, receipted like everything else."}`
-                  : `${m.name} — free council.`}
+                aria-pressed={active}
+                aria-label={explain}
+                title={explain}
                 style={{
                 fontFamily: "monospace", fontSize: 8, letterSpacing: "0.08em", cursor: "pointer",
                 padding: "4px 8px", background: active ? `${m.color}18` : "rgba(4,3,10,0.8)",
@@ -1589,6 +1621,9 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
             }}
           >📎</button>
           <textarea
+            id="vf-gate-input"
+            name="query"
+            aria-label="Ask through the gate"
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}

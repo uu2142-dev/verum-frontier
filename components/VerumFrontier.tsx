@@ -382,8 +382,9 @@ export default function VerumFrontier() {
           </h1>
         </div>
 
-        {/* Mode toggle */}
-        <div className="flex items-center gap-0 font-mono">
+        {/* Mode toggle — a real tablist, so the four views are navigable and
+            their selected state is announced rather than conveyed by colour. */}
+        <div className="flex items-center gap-0 font-mono" role="tablist" aria-label="Gate views">
           {(["live", "models", "memories", "demo"] as const).map(m => {
             const meta = MODE_META[m];
             const on = mode === m;
@@ -391,6 +392,8 @@ export default function VerumFrontier() {
               <button
                 key={m}
                 onClick={() => setMode(m)}
+                role="tab"
+                aria-selected={on}
                 className="uppercase"
                 style={{
                   fontSize: 8, letterSpacing: "0.2em", padding: "5px 12px", cursor: "pointer",

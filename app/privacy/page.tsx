@@ -34,11 +34,21 @@ export default function Privacy() {
         <h2 style={S.h2}>What actually happens to a query</h2>
         <p style={S.p}>
           When you send a live query, it goes from your browser to our serverless
-          function, which forwards it to the model provider you selected (Groq, Inc. or
-          Google) to generate the answer. Providers process it under their own
+          function, which forwards it to the model provider you selected — Groq, Inc.,
+          Google, Anthropic, OpenAI, or xAI. Providers process it under their own
           policies. If you attach text or a document, it travels the same path — to
           the provider, for that one answer only — and is sealed by hash into the
-          exchange record; we store neither the query nor the attachment. The receipt
+          exchange record; we store neither the query nor the attachment. Sealed
+          memories the gate recalls for a turn are sent along with it, because that
+          is how the model reads them. With GROUND IT on, your query is also used to
+          run web searches, either by that provider or through Google Search.
+        </p>
+        <p style={S.p}>
+          One more hop worth naming: the answer text (not your query) is sent to our
+          own bias-screening service, running on RHAI infrastructure, to produce the
+          toxicity and framing percentiles shown under each answer. It is not sent to
+          any third party, and nothing is stored there. If that service is
+          unreachable the answer still ships, labeled as unscreened. The receipt
           and SHA-256 seal are computed in the moment and returned to you; we keep no
           copy. The sealed-session JSON download is generated in your browser and
           never uploaded anywhere.
