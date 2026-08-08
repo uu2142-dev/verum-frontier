@@ -38,7 +38,11 @@ export const maxDuration = 300;
 const PROVIDER_TIMEOUT_MS = 250_000;
 
 const MAX_INPUT_CHARS = 4000;
-const MAX_HISTORY_CHARS = 12000;
+// Must hold ONE full paid-cap answer plus the next query, or "continue" cannot
+// work: 4,096 output tokens is roughly 16k chars, and MAX_INPUT_CHARS adds 4k.
+// The old 12,000 was under that floor, so the affordance was unreachable on the
+// paid tier by arithmetic. Older turns beyond this are trimmed, not refused.
+const MAX_HISTORY_CHARS = 24000;
 const MAX_HISTORY_MESSAGES = 20;
 const MAX_OUTPUT_TOKENS_FREE = 1024;
 const MAX_OUTPUT_TOKENS_PAID = 4096; // paying customers get room; cost-plus bills it honestly
@@ -785,9 +789,29 @@ export async function POST(req: Request) {
   if (latest.length > MAX_INPUT_CHARS) {
     return NextResponse.json({ error: `Query too long (max ${MAX_INPUT_CHARS} chars).` }, { status: 400 });
   }
-  const totalChars = messages.reduce((s, m) => s + m.content.length, 0);
-  if (totalChars > MAX_HISTORY_CHARS) {
-    return NextResponse.json({ error: "Conversation too long — start a new session." }, { status: 400 });
+  // History used to be a hard 400 once it passed the cap, which broke the one
+  // affordance that depends on it: a capped answer tells the user to say
+  // "continue", and continuing requires the truncated answer to still be in
+  // history. At the paid cap of 4,096 output tokens that answer is ~16k chars
+  // on its own, so "continue" was rejected before the model ever saw it — the
+  // failure landing only on the tier that pays for the bigger cap.
+  //
+  // Now the OLDEST turns are dropped until it fits, which preserves the most
+  // recent exchange (the thing being continued). Trimming is reported rather
+  // than silent: quietly changing what the model was shown is exactly the kind
+  // of undisclosed state change this gate exists to make visible.
+  let historyTrimmed = 0;
+  while (
+    messages.length > 1 &&
+    messages.reduce((s, m) => s + m.content.length, 0) > MAX_HISTORY_CHARS
+  ) {
+    messages.shift();
+    historyTrimmed += 1;
+  }
+  if (messages.reduce((s, m) => s + m.content.length, 0) > MAX_HISTORY_CHARS) {
+    // Only reachable if the new query alone exceeds the cap, which MAX_INPUT_CHARS
+    // already prevents — kept so the limit can never be silently exceeded.
+    return NextResponse.json({ error: "Query too long for this conversation." }, { status: 400 });
   }
 
   // Attached text/document: rides this ONE turn only (the archive remembers
@@ -1085,7 +1109,15 @@ export async function POST(req: Request) {
     outputCap,
     declined,
     stages: [
-      { label: "INTENT CHECK v1", detail: "format + length validation", ms: tIntent - t0 },
+      {
+        label: "INTENT CHECK v1",
+        // Say it when history was cut. The model saw less than the transcript
+        // shows, and that is a state change the reader is entitled to.
+        detail: historyTrimmed
+          ? `format + length validation · ${historyTrimmed} older turn${historyTrimmed === 1 ? "" : "s"} trimmed to fit the context budget`
+          : "format + length validation",
+        ms: tIntent - t0,
+      },
       ...(routing ? [{
         label: "ALICE ROUTING (client-side)",
         detail: `${routing.mode.toUpperCase()} → ${spec.name} · ${routing.rule} — decided in your browser, sovereign`,
