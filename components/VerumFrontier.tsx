@@ -371,7 +371,7 @@ export default function VerumFrontier() {
       }} />
 
       {/* ── TOP HEADER ────────────────────────────────────────────────── */}
-      <header className="relative z-50 flex justify-between items-center p-4 md:p-6 border-b border-white/5 bg-black/40 backdrop-blur-md">
+      <header className="relative z-50 flex flex-wrap justify-between items-center gap-y-3 p-4 md:p-6 border-b border-white/5 bg-black/40 backdrop-blur-md">
         <div className="flex items-center gap-3 md:gap-4">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/rhai-logo.png" alt="Rabbit Hole AI" className="w-6 h-6 md:w-7 md:h-7 rounded-sm flex-shrink-0" />
@@ -384,7 +384,7 @@ export default function VerumFrontier() {
 
         {/* Mode toggle — a real tablist, so the four views are navigable and
             their selected state is announced rather than conveyed by colour. */}
-        <div className="flex items-center gap-0 font-mono" role="tablist" aria-label="Gate views">
+        <div className="flex flex-wrap items-center gap-0 font-mono" role="tablist" aria-label="Gate views">
           {(["live", "models", "memories", "demo"] as const).map(m => {
             const meta = MODE_META[m];
             const on = mode === m;

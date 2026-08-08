@@ -736,6 +736,10 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
   const [linking, setLinking] = useState(false);
   const [copied, setCopied] = useState(false);
   const [proofOpen, setProofOpen] = useState(false);
+  // The LIVE PIPELINE readout and the download button live in a desktop-only
+  // sidebar; on phones they were simply gone — the architecture proof invisible
+  // and no way to download a seal. This drives a mobile-only equivalent.
+  const [mobilePipeOpen, setMobilePipeOpen] = useState(false);
   const [buying, setBuying] = useState(false);
   const [claimNote, setClaimNote] = useState<string | null>(null);
   const [routerMode, setRouterMode] = useState<RouterMode>(null);
@@ -1804,6 +1808,69 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
               color: "#c8941a", opacity: canSend ? 1 : 0.4,
             }}
           >{sending ? "…" : "SEND"}</button>
+        </div>
+
+        {/* ── MOBILE PIPELINE + DOWNLOAD — the sidebar below is desktop-only, so
+            on phones the architecture proof and the download button live here. */}
+        <div className="lg:hidden grid gap-1.5 pb-3">
+          <div className="flex gap-2">
+            <button
+              onClick={downloadSession}
+              disabled={!thread.length}
+              aria-label="Download the sealed session JSON"
+              style={{
+                flex: 1, fontFamily: "monospace", fontSize: 9, letterSpacing: "0.1em",
+                padding: "9px 6px", cursor: thread.length ? "pointer" : "default",
+                border: "1px solid rgba(200,148,26,0.4)", background: "rgba(200,148,26,0.08)",
+                color: "#c8941a", opacity: thread.length ? 1 : 0.35,
+              }}
+            >⬇ DOWNLOAD SEAL ({thread.length})</button>
+            <button
+              onClick={() => setMobilePipeOpen(o => !o)}
+              aria-expanded={mobilePipeOpen}
+              aria-label="Show the live pipeline readout for the last exchange"
+              style={{
+                flex: 1, fontFamily: "monospace", fontSize: 9, letterSpacing: "0.1em",
+                padding: "9px 6px", cursor: "pointer",
+                border: "1px solid rgba(46,204,113,0.35)", background: "rgba(46,204,113,0.06)",
+                color: "#2ecc71",
+              }}
+            >⚙ PIPELINE{last ? ` · ${last.stages.length} stages` : ""} {mobilePipeOpen ? "▲" : "▾"}</button>
+          </div>
+          {mobilePipeOpen && (
+            <div style={{
+              maxHeight: "42vh", overflowY: "auto", padding: 12,
+              border: "1px solid rgba(255,255,255,0.08)", background: "rgba(4,3,10,0.94)",
+            }}>
+              <div style={{ fontSize: 8, letterSpacing: "0.25em", color: "rgba(255,255,255,0.3)", fontFamily: "monospace", marginBottom: 8 }}>
+                LIVE PIPELINE — LAST EXCHANGE
+              </div>
+              {!last ? (
+                <div style={{ fontFamily: "monospace", fontSize: 9, color: "rgba(255,255,255,0.25)", lineHeight: 2 }}>
+                  AWAITING FIRST QUERY<span className="blink">_</span><br />
+                  <span style={{ fontSize: 8 }}>Stages, timings, token counts and hashes are measured server-side per exchange — not simulated.</span>
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 14 }}>
+                  <div>
+                    {last.stages.map((s, i) => (
+                      <div key={i} style={{ borderLeft: "1px solid rgba(46,204,113,0.5)", paddingLeft: 10, marginBottom: 6, fontFamily: "monospace" }}>
+                        <div style={{ fontSize: 9, color: "rgba(255,255,255,0.8)" }}>
+                          <span style={{ color: "#2ecc71" }}>✓</span> [{String(i + 1).padStart(2, "0")}] {s.label}
+                          <span style={{ color: "rgba(255,255,255,0.3)" }}> · {s.ms}ms</span>
+                        </div>
+                        <div style={{ fontSize: 8, color: "rgba(255,255,255,0.35)", marginTop: 1 }}>{s.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <ReceiptCard r={last.receipt} color={models.find(m => m.id === last.modelId)?.color ?? "#fff"} />
+                  <GroundingView ex={last} />
+                  <BiasCard b={last.bias} />
+                  <SealView ex={last} />
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
