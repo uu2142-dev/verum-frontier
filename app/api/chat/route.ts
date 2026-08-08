@@ -859,6 +859,28 @@ export async function POST(req: Request) {
       { status: 402 },
     );
   }
+  // Retrieval is CREDITS ONLY, for the same reason premium models are. The
+  // premium gate above deliberately checks callSpec so a GROUND IT relay to free
+  // Gemini isn't billed as premium — but the search itself still costs us real
+  // money whoever answers ($0.035 a Google relay, $0.005–$0.01 native). On the
+  // free tier that is pure outflow: a sealed 2026-08-08 session shows a grounded
+  // free query with groundingUsd $0.035 and chargedUsd $0.00. Five free queries
+  // a day is $0.175 per visitor if every one is grounded, so a single popular
+  // link is a real bill. The client answers this by replaying a sealed
+  // grounded/ungrounded pair instead, which costs nothing and makes the point
+  // better than a live run would.
+  if (groundingRequested && !paid) {
+    return NextResponse.json(
+      {
+        error: "GROUND IT runs a live web search, which costs real money per query — " +
+          "so it runs on prepaid credits, not the free tier. The free council stays free, " +
+          "and every answer keeps its grounded/ungrounded stamp either way.",
+        groundingLocked: true,
+        quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
+      },
+      { status: 402 },
+    );
+  }
   // (The Fable-5-grounding block was removed once maxDuration was raised to 300s
   // — the 60s wall was our own config, not the plan. Grounded Fable 5 now runs;
   // if a provider call still overruns 250s it returns 502 uncharged, not a

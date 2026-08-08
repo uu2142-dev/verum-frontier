@@ -6,6 +6,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fmtUsd } from "@/lib/pricing";
+import {
+  PROOF_CAPTURED_AT, PROOF_SESSION_ROOT, PROOF_QUERY,
+  PROOF_UNGROUNDED, PROOF_GROUNDED, type ProofSide,
+} from "@/lib/groundingProof";
 
 // ── Types mirrored from /api/chat ─────────────────────────────────────────
 
@@ -457,6 +461,80 @@ async function sha256Hex(s: string): Promise<string> {
 
 // ── Receipt card ──────────────────────────────────────────────────────────
 
+// A replay of one real sealed session, never a simulation. Everything here was
+// downloaded from the live gate; the seal roots are the real ones and can be
+// re-verified. That distinction is the whole product, so the panel states it
+// plainly rather than letting a canned pair read as a live run.
+function ProofColumn({ s, accent }: { s: ProofSide; accent: string }) {
+  return (
+    <div style={{ flex: "1 1 260px", border: `1px solid ${accent}33`, background: `${accent}0a`, padding: "8px 10px" }}>
+      <div style={{ fontSize: 9, letterSpacing: "0.14em", color: accent, marginBottom: 5 }}>
+        {s.label} · {s.modelName}
+      </div>
+      {s.answeredBy && (
+        <div style={{ fontSize: 9, color: "rgba(255,255,255,0.45)", marginBottom: 5, lineHeight: 1.6 }}>
+          you picked {s.modelName}; only Gemini grounds, so <strong style={{ color: accent }}>{s.answeredBy}</strong> answered — recorded in the seal
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.86)", lineHeight: 1.65, marginBottom: 6 }}>
+        {s.response}
+      </div>
+      <div style={{ fontSize: 9, color: accent, marginBottom: 6 }}>{s.stamp}</div>
+      {s.searchQueries && (
+        <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", lineHeight: 1.6, marginBottom: 6 }}>
+          searched: {s.searchQueries.map(q => `“${q}”`).join(" · ")}
+        </div>
+      )}
+      <div style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", lineHeight: 1.75, borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: 5 }}>
+        {s.inTokens.toLocaleString()} in / {s.outTokens.toLocaleString()} out · {s.llmMs.toLocaleString()}ms<br />
+        API {fmtUsd(s.directUsd)}{s.groundingUsd > 0 ? ` + retrieval ${fmtUsd(s.groundingUsd)}` : ""} + 5% infra + 15% support<br />
+        <strong style={{ color: accent }}>total {fmtUsd(s.totalUsd)}</strong>
+        <span style={{ opacity: 0.55 }}> · seal {s.sealRoot.slice(0, 10)}…</span>
+      </div>
+    </div>
+  );
+}
+
+function GroundingProof({ onClose }: { onClose: () => void }) {
+  return (
+    <div style={{
+      marginBottom: 8, padding: "9px 11px", fontFamily: "monospace",
+      border: "1px solid rgba(88,166,255,0.4)", background: "rgba(88,166,255,0.05)",
+    }}>
+      <div className="flex items-start justify-between gap-3">
+        <h3 style={{ fontSize: 10, letterSpacing: "0.14em", color: "#58a6ff", margin: 0, fontWeight: "inherit" }}>
+          🔎 WHAT GROUNDING CHANGES — SAME QUESTION, BOTH WAYS
+        </h3>
+        <button onClick={onClose} aria-label="Close the grounding proof"
+          style={{ background: "none", border: "none", color: "rgba(255,255,255,0.45)", cursor: "pointer", fontSize: 12, lineHeight: 1 }}>×</button>
+      </div>
+      <p style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", lineHeight: 1.7, margin: "6px 0 9px" }}>
+        A live web search costs real money per query, so GROUND IT runs on credits. Rather than
+        describe the difference, here is a <strong style={{ color: "rgba(255,255,255,0.8)" }}>real sealed exchange
+        replayed</strong> — captured from this gate on {PROOF_CAPTURED_AT}, seals and signature intact,
+        re-verifiable like any session you download. Nothing below is simulated.
+      </p>
+      <div style={{ fontSize: 10, color: "rgba(255,255,255,0.7)", marginBottom: 8, lineHeight: 1.6 }}>
+        <span style={{ color: "rgba(255,255,255,0.4)" }}>asked: </span>{PROOF_QUERY}
+      </div>
+      <div className="flex gap-2 flex-wrap">
+        <ProofColumn s={PROOF_UNGROUNDED} accent="#9aa0a6" />
+        <ProofColumn s={PROOF_GROUNDED} accent="#58a6ff" />
+      </div>
+      <p style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", lineHeight: 1.7, margin: "9px 0 0" }}>
+        The ungrounded model was <strong style={{ color: "rgba(255,255,255,0.75)" }}>honest, not wrong</strong> — it
+        declined and said why. That stamp is on every answer here, grounded or not, so confident prose is never
+        mistaken for a sourced one. Grounding cost {fmtUsd(PROOF_GROUNDED.totalUsd)} against{" "}
+        {fmtUsd(PROOF_UNGROUNDED.totalUsd)}: roughly {Math.round(PROOF_GROUNDED.totalUsd / PROOF_UNGROUNDED.totalUsd)}×,
+        almost all of it the search itself, itemised on the receipt either way.
+      </p>
+      <p style={{ fontSize: 9, color: "rgba(255,255,255,0.3)", margin: "6px 0 0" }}>
+        session root {PROOF_SESSION_ROOT.slice(0, 24)}… · key 8b4d8aa466c356e6
+      </p>
+    </div>
+  );
+}
+
 function ReceiptCard({ r, color }: { r: Receipt; color: string }) {
   return (
     <div style={{ fontFamily: "monospace", fontSize: 9, lineHeight: 1.9 }}>
@@ -645,6 +723,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
   const [linkArmed, setLinkArmed] = useState(false); // 2-step when replacing funds
   const [linking, setLinking] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [proofOpen, setProofOpen] = useState(false);
   const [buying, setBuying] = useState(false);
   const [claimNote, setClaimNote] = useState<string | null>(null);
   const [routerMode, setRouterMode] = useState<RouterMode>(null);
@@ -917,6 +996,10 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
       if (!res.ok) {
         setError(data.error ?? `Gate error (${res.status}).`);
         if (data.quota) setQuota(data.quota);
+        // Credits can run out while GROUND IT is still toggled on. Don't leave
+        // the user staring at a refusal — clear the toggle and show the proof,
+        // which is the honest answer to "what would grounding have given me?".
+        if (data.groundingLocked) { setGroundOn(false); setProofOpen(true); }
         return;
       }
       const chainHash = await sha256Hex(chainRef.current + data.seal.root);
@@ -1373,8 +1456,21 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
         <div className="flex gap-1.5 flex-wrap mb-2">
           {ground.available && (
             <button
-              onClick={() => setGroundOn(g => !g)}
-              title={`GROUND IT routes your query through ${ground.via} — real web sources, cited and sealed. Adds Google's search-grounding cost to the receipt. Overrides the selected model (only Gemini grounds).`}
+              onClick={() => {
+                // Retrieval costs real money per query and the free tier charges
+                // nothing, so a free visitor gets the sealed proof replay instead
+                // of a live search. Same point, none of the outflow — and it no
+                // longer costs them two of their five queries to discover.
+                if (!creditsActive) { setProofOpen(true); if (payments.enabled) setBuyOpen(true); return; }
+                setGroundOn(g => !g);
+              }}
+              aria-pressed={groundOn}
+              aria-label={creditsActive
+                ? `GROUND IT — route this query through ${ground.via}; real web sources, cited and sealed, with the retrieval cost itemised on the receipt.`
+                : "GROUND IT runs a live web search and needs credits. Opens a sealed grounded-versus-ungrounded comparison you can verify."}
+              title={creditsActive
+                ? `GROUND IT routes your query through ${ground.via} — real web sources, cited and sealed. Adds the search cost to the receipt. Overrides the selected model (only Gemini grounds).`
+                : "GROUND IT needs credits — a live web search costs real money per query. Click to see a sealed side-by-side proof of what it changes."}
               style={{
                 fontFamily: "monospace", fontSize: 8, letterSpacing: "0.08em", cursor: "pointer",
                 padding: "4px 8px",
@@ -1383,7 +1479,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
                 color: groundOn ? "#58a6ff" : "rgba(255,255,255,0.45)",
               }}
             >
-              🔎 GROUND IT{groundOn ? " · ON" : ""}
+              🔎 GROUND IT{groundOn ? " · ON" : ""}{!creditsActive ? " 💳" : ""}
             </button>
           )}
           {([["save", "🐇 ALICE · SAVE $"], ["best", "🐇 ALICE · BEST"]] as const).map(([m, label]) => (
@@ -1548,6 +1644,12 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
             </span>
           </div>
         )}
+
+        {/* The grounded/ungrounded proof, replayed from a real sealed session.
+            Shown when a free visitor reaches for GROUND IT: retrieval is
+            credits-only, and this makes the point without spending either their
+            queries or our search budget. */}
+        {proofOpen && <GroundingProof onClose={() => setProofOpen(false)} />}
 
         {/* Recall preview — what this query will pull from the sealed archive,
             shown BEFORE sending so a wrong pick costs nothing to catch. */}
