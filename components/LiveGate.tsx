@@ -703,8 +703,11 @@ function SealView({ ex }: { ex: Exchange }) {
           {" — "}{ex.memoryRecall.roots.map(r => r.slice(0, 8)).join(", ")}
         </div>
       )}
-      <div style={{ color: "rgba(255,255,255,0.2)", marginTop: 2 }}>
-        sealed {ex.seal.sealedAt.slice(0, 19)}Z · verify with any SHA-256 tool
+      <div style={{ color: "rgba(255,255,255,0.35)", marginTop: 2 }}>
+        sealed {ex.seal.sealedAt.slice(0, 19)}Z ·{" "}
+        <a href="/verify" target="_blank" rel="noopener noreferrer" style={{ color: "#58a6ff", textDecoration: "underline" }}>
+          verify this seal
+        </a>{" "}or with any SHA-256 tool
       </div>
     </div>
   );

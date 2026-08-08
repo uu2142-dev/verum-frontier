@@ -1,0 +1,318 @@
+"use client";
+
+import { useCallback, useRef, useState } from "react";
+import Link from "next/link";
+import { verifySession, type SessionResult, type ExchangeResult } from "@/lib/sealVerify";
+
+const C = {
+  green: "#2ecc71",
+  red: "#e74c3c",
+  amber: "#c8941a",
+  blue: "#58a6ff",
+  dim: "rgba(255,255,255,0.45)",
+  dimmer: "rgba(255,255,255,0.3)",
+};
+
+function short(h: string, n = 12) {
+  return h.length > n * 2 + 1 ? `${h.slice(0, n)}…${h.slice(-6)}` : h;
+}
+
+export default function VerifyPage() {
+  const [result, setResult] = useState<SessionResult | null>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const run = useCallback(async (text: string, name: string) => {
+    setBusy(true); setError(null); setResult(null); setFileName(name);
+    try {
+      const doc = JSON.parse(text);
+      const r = await verifySession(doc);
+      setResult(r);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not read that file as a sealed session.");
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const onFile = useCallback((f: File) => {
+    const reader = new FileReader();
+    reader.onload = () => run(String(reader.result ?? ""), f.name);
+    reader.onerror = () => setError("Could not read that file.");
+    reader.readAsText(f);
+  }, [run]);
+
+  const loadSample = useCallback(async () => {
+    setBusy(true); setError(null);
+    try {
+      const res = await fetch("/sample-sealed-session.json");
+      if (!res.ok) throw new Error("Sample not found.");
+      await run(await res.text(), "sample-sealed-session.json (a real session from the gate)");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load the sample.");
+      setBusy(false);
+    }
+  }, [run]);
+
+  return (
+    <main className="min-h-screen bg-black font-mono" style={{ padding: "48px 24px" }}>
+      <div style={{ maxWidth: 860, margin: "0 auto" }}>
+        <Link href="/" style={{ fontSize: 10, letterSpacing: "0.25em", color: C.dim }}>← VERUM FRONTIER</Link>
+
+        <h1 style={{ color: "#fff", fontSize: 18, letterSpacing: "0.18em", margin: "18px 0 4px", textTransform: "uppercase" }}>
+          Verify a sealed session
+        </h1>
+        <p style={{ fontSize: 10, color: C.dimmer, letterSpacing: "0.08em", marginBottom: 20 }}>
+          RECOMPUTED ENTIRELY IN YOUR BROWSER · NOTHING IS UPLOADED
+        </p>
+
+        <p style={{ color: "rgba(255,255,255,0.72)", fontSize: 13, lineHeight: 1.8, marginBottom: 10 }}>
+          Every answer the gate returns ships with a downloadable record: SHA-256 leaf hashes over the query,
+          the response, the receipt, and the rest; a Merkle root over those leaves; and an Ed25519 signature
+          over the root. This page recomputes all of it from the file you give it and shows you each check
+          pass or fail. It runs on your machine — the file is read locally and never leaves the page.
+        </p>
+        <p style={{ color: "rgba(255,255,255,0.72)", fontSize: 13, lineHeight: 1.8, marginBottom: 22 }}>
+          What a green result proves: the record is the one this gate sealed, at the time it claims, and the
+          readable text beside it is the text that was sealed. What it does <strong>not</strong> prove: that any
+          model was correct. That distinction is the point — verify the artifact, don&apos;t trust the vendor.
+        </p>
+
+        {/* drop zone */}
+        <div
+          onDragOver={e => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files?.[0]; if (f) onFile(f); }}
+          style={{
+            border: `1px dashed ${dragging ? C.blue : "rgba(255,255,255,0.2)"}`,
+            background: dragging ? "rgba(88,166,255,0.06)" : "rgba(255,255,255,0.02)",
+            padding: "26px 18px", textAlign: "center", marginBottom: 12,
+          }}
+        >
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", marginBottom: 12 }}>
+            Drop a <code>verum-session-*.json</code> here, or
+          </div>
+          <div className="flex" style={{ gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+            <button
+              onClick={() => inputRef.current?.click()}
+              style={{
+                fontFamily: "monospace", fontSize: 11, letterSpacing: "0.1em", cursor: "pointer",
+                padding: "7px 16px", border: `1px solid ${C.blue}`, background: "rgba(88,166,255,0.12)", color: C.blue,
+              }}
+            >CHOOSE A FILE</button>
+            <button
+              onClick={loadSample}
+              style={{
+                fontFamily: "monospace", fontSize: 11, letterSpacing: "0.1em", cursor: "pointer",
+                padding: "7px 16px", border: "1px solid rgba(255,255,255,0.25)", background: "transparent", color: C.dim,
+              }}
+            >LOAD A SAMPLE SESSION</button>
+          </div>
+          <input
+            ref={inputRef} type="file" accept=".json,application/json"
+            aria-label="Choose a sealed session file to verify"
+            onChange={e => { const f = e.target.files?.[0]; if (f) onFile(f); }}
+            style={{ display: "none" }}
+          />
+        </div>
+
+        <div aria-live="polite">
+          {busy && <p style={{ fontSize: 12, color: C.amber }}>Recomputing hashes…</p>}
+          {error && (
+            <div role="alert" style={{ fontSize: 12, color: C.red, border: `1px solid rgba(231,76,60,0.4)`, background: "rgba(231,76,60,0.06)", padding: "10px 12px" }}>
+              ⚠ {error}
+            </div>
+          )}
+          {result && <Results result={result} fileName={fileName} />}
+        </div>
+
+        <CanonRules />
+      </div>
+    </main>
+  );
+}
+
+function Verdict({ result }: { result: SessionResult }) {
+  const green = result.ok;
+  const color = green ? C.green : C.red;
+  return (
+    <div role="status" style={{
+      border: `1px solid ${color}`, background: green ? "rgba(46,204,113,0.07)" : "rgba(231,76,60,0.07)",
+      padding: "12px 14px", marginBottom: 14,
+    }}>
+      <div style={{ fontSize: 14, letterSpacing: "0.1em", color }}>
+        {green ? "✓ VERIFIED" : "✗ VERIFICATION FAILED"}
+      </div>
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", lineHeight: 1.7, marginTop: 5 }}>
+        {green
+          ? `All ${result.exchangeCount} exchange${result.exchangeCount === 1 ? "" : "s"} recompute exactly: every ` +
+            `content hash matches, every Merkle root matches, the session chain links end to end` +
+            (result.webCryptoEd25519 ? ", and every Ed25519 signature is valid." : ". (Your browser could not run Ed25519 — the hash chain still verifies.)")
+          : "At least one recomputed value does not match what the file claims. The mismatches are marked in red below — the record was altered after it was sealed, or the file is not a genuine session from this gate."}
+        {result.anySkipped && green && (
+          <span style={{ color: C.dim }}> Some leaves were skipped because they can only be checked against data not included in the export (see the notes below).</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Results({ result, fileName }: { result: SessionResult; fileName: string | null }) {
+  return (
+    <div style={{ marginTop: 4 }}>
+      {fileName && <div style={{ fontSize: 10, color: C.dimmer, marginBottom: 8 }}>FILE: {fileName}</div>}
+      <Verdict result={result} />
+      <div style={{ fontSize: 11, color: C.dim, marginBottom: 8 }}>
+        SESSION CHAIN ROOT: <span style={{ color: result.chainRootOk ? C.green : C.red }}>{result.chainRootOk ? "links end-to-end ✓" : "BROKEN ✗"}</span>
+      </div>
+      {result.exchanges.map(ex => <ExchangeCard key={ex.index} ex={ex} />)}
+    </div>
+  );
+}
+
+function ExchangeCard({ ex }: { ex: ExchangeResult }) {
+  const [open, setOpen] = useState(false);
+  const bad = !ex.rootOk || !ex.chainOk || ex.sigStatus === "invalid" || ex.leaves.some(l => l.status === "mismatch");
+  const edge = bad ? C.red : C.green;
+  return (
+    <div style={{ border: `1px solid ${edge}33`, marginBottom: 8 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        style={{
+          width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer",
+          padding: "9px 11px", fontFamily: "monospace", fontSize: 11, color: "rgba(255,255,255,0.8)",
+          display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center",
+        }}
+      >
+        <span>
+          <span style={{ color: edge }}>{bad ? "✗" : "✓"}</span>{" "}
+          <span style={{ color: C.dim }}>[{ex.index}]</span> {ex.model}
+          {ex.declined && <span style={{ color: C.amber }}> · declined</span>}
+          {ex.truncated && <span style={{ color: C.amber }}> · truncated</span>}
+          <span style={{ color: C.dimmer }}> — {ex.queryPreview}{ex.queryPreview.length >= 100 ? "…" : ""}</span>
+        </span>
+        <span style={{ color: C.dim }}>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div style={{ padding: "2px 11px 11px", fontSize: 10, lineHeight: 1.9 }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 420 }}>
+              <thead>
+                <tr style={{ color: C.dimmer, textAlign: "left" }}>
+                  <th style={{ padding: "2px 8px 2px 0", fontWeight: "inherit" }}>LEAF</th>
+                  <th style={{ padding: "2px 8px", fontWeight: "inherit" }}>RECOMPUTED</th>
+                  <th style={{ padding: "2px 8px", fontWeight: "inherit" }}>CLAIMED</th>
+                  <th style={{ padding: "2px 0", fontWeight: "inherit" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {ex.leaves.map((l, i) => {
+                  const c = l.status === "match" ? C.green : l.status === "mismatch" ? C.red : C.dimmer;
+                  return (
+                    <tr key={i} style={{ color: "rgba(255,255,255,0.6)" }}>
+                      <td style={{ padding: "2px 8px 2px 0", color: "rgba(255,255,255,0.75)" }}>{l.label}</td>
+                      <td style={{ padding: "2px 8px" }}>{l.computed ? short(l.computed) : "—"}</td>
+                      <td style={{ padding: "2px 8px" }}>{short(l.claimed)}</td>
+                      <td style={{ padding: "2px 0", color: c }}>
+                        {l.status === "match" ? "✓" : l.status === "mismatch" ? "✗ MISMATCH" : "skip"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {ex.leaves.some(l => l.note) && (
+            <div style={{ color: C.dimmer, marginTop: 4 }}>
+              {ex.leaves.filter(l => l.note).map((l, i) => <div key={i}>· {l.label}: {l.note}</div>)}
+            </div>
+          )}
+          <div style={{ marginTop: 8, color: "rgba(255,255,255,0.6)" }}>
+            <div>MERKLE ROOT: <span style={{ color: ex.rootOk ? C.green : C.red }}>{ex.rootOk ? "recomputes from the leaves ✓" : "does NOT match ✗"}</span></div>
+            <div style={{ color: C.dimmer }}>{short(ex.computedRoot, 18)}</div>
+            <div style={{ marginTop: 4 }}>
+              ED25519 SIGNATURE:{" "}
+              <span style={{ color: ex.sigStatus === "valid" ? C.green : ex.sigStatus === "invalid" ? C.red : C.dim }}>
+                {ex.sigStatus === "valid" ? "valid, signed by the published key ✓"
+                  : ex.sigStatus === "invalid" ? "INVALID ✗"
+                  : ex.sigStatus === "unsigned" ? "unsigned"
+                  : "your browser can't run Ed25519 — hashes still verify"}
+              </span>
+              {ex.keyIdMatch === true && <span style={{ color: C.dimmer }}> · key fingerprint matches the file&apos;s published key</span>}
+              {ex.keyIdMatch === false && <span style={{ color: C.red }}> · key fingerprint MISMATCH</span>}
+            </div>
+            <div style={{ marginTop: 4 }}>
+              CHAIN LINK: <span style={{ color: ex.chainOk ? C.green : C.red }}>{ex.chainOk ? "links to the previous exchange ✓" : "BROKEN ✗"}</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CanonRules() {
+  const [open, setOpen] = useState(false);
+  const P = (s: string) => <code style={{ color: "rgba(255,255,255,0.75)" }}>{s}</code>;
+  return (
+    <div style={{ marginTop: 26, borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 16 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "monospace",
+          fontSize: 11, letterSpacing: "0.1em", color: C.dim }}
+      >
+        {open ? "▲" : "▼"} HOW EACH HASH IS COMPUTED (so you can rebuild this yourself)
+      </button>
+      {open && (
+        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.6)", lineHeight: 1.9, marginTop: 10 }}>
+          <p style={{ marginBottom: 8 }}>
+            Every leaf is {P("SHA-256")} over a {P("JSON.stringify")} preimage: keys in the order given, no
+            whitespace, non-ASCII characters left unescaped, hashed as UTF-8. The exact preimages:
+          </p>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", minWidth: 460 }}>
+              <tbody>
+                {[
+                  ["QUERY", `{q: <query>, ts: <seal.sealedAt>}`],
+                  ["RESPONSE", `{r: <response>, model: <model>}`],
+                  ["SOURCES", `[<grounding.sources URIs, in order>]`],
+                  ["RECEIPT", `<the receipt object, verbatim>`],
+                  ["BIAS", `<the biasScreen object, verbatim>`],
+                  ["MEMORY", `<memoryRecall.roots>`],
+                  ["TIMING", `{model: <provider model id>, llmMs: <timingMs.llm>}`],
+                  ["DOCUMENT", `{name: <attachment name>, doc: <attachment text>}`],
+                ].map(([k, v]) => (
+                  <tr key={k}>
+                    <td style={{ padding: "2px 14px 2px 0", color: "rgba(255,255,255,0.8)", verticalAlign: "top" }}>{k}</td>
+                    <td style={{ padding: "2px 0" }}>{P(v)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p style={{ margin: "10px 0 6px" }}>
+            The Merkle root pairs leaf hashes left to right, duplicating the last when the count is odd, and
+            hashes the concatenation of the two hex strings, level by level, up to a single root. The session
+            chain is {P("SHA-256(prevChainHash + seal.root)")}, starting from{" "}
+            {P("SHA-256('VERUM_FRONTIER_SESSION_GENESIS' + startedAt)")}. The signature is Ed25519 over{" "}
+            {P("'VF-SEAL-v1|' + root + '|' + sealedAt")}, by the published key.
+          </p>
+          <p style={{ color: C.dimmer }}>
+            Two leaves may show as skipped rather than checked. DOCUMENT&apos;s preimage includes the full text of
+            a file you attached, which the export deliberately does not carry — verify it against your own copy.
+            TIMING is hashed over the provider&apos;s model name; this page maps the display id to it from a public
+            table. A pure-standard-library reference implementation is at{" "}
+            <a href="https://github.com/uu2142-dev/alice-evidence" target="_blank" rel="noopener noreferrer" style={{ color: C.amber, textDecoration: "underline" }}>
+              github.com/uu2142-dev/alice-evidence
+            </a>.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}

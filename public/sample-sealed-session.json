@@ -1,0 +1,383 @@
+{
+  "format": "verum-frontier-sealed-session/v1",
+  "site": "rabbitholeai.ai",
+  "startedAt": "2026-08-08T14:30:17.493Z",
+  "exportedAt": "2026-08-08T15:32:04.792Z",
+  "exchanges": [
+    {
+      "query": "Who won the 2026 FIFA World Cup final, what was the score, and who scored the goals?",
+      "response": "I’m sorry, but I don’t have that information. My training data only goes up through mid‑2024, and the 2026 FIFA World Cup had not taken place at that time, so I can’t provide the winner, final score, or goal‑scorers.",
+      "model": "gpt-oss-120b",
+      "requestedModel": "gpt-oss-120b",
+      "modelOverridden": false,
+      "receipt": {
+        "priceSheetDate": "2026-07-24",
+        "model": "gpt-oss-120b",
+        "rates": {
+          "inPerM": 0.15,
+          "outPerM": 0.6
+        },
+        "usage": {
+          "inputTokens": 1080,
+          "outputTokens": 248,
+          "cachedInputTokens": 0
+        },
+        "directUsd": 0.0003108,
+        "uncachedInputTokens": 1080,
+        "cachedInputTokens": 0,
+        "cacheRatePerM": 0.15,
+        "cacheWriteTokens": 0,
+        "cacheWriteRatePerM": 0.1875,
+        "groundingUsd": 0,
+        "searchRequests": 0,
+        "searchUnitUsd": 0.035,
+        "infraUsd": 0.00001554,
+        "supportUsd": 0.00004662,
+        "supportSplit": {
+          "server": 0.000013986,
+          "development": 0.000018648,
+          "steward": 0.000009324,
+          "reserve": 0.000004662
+        },
+        "totalUsd": 0.00037296,
+        "chargedUsd": 0,
+        "tier": "free"
+      },
+      "biasScreen": {
+        "version": "bias_v1",
+        "toxicity": 0.003,
+        "toxicityPctile": 28,
+        "framing": 0.0033,
+        "framingPctile": 23,
+        "validated": {
+          "toxicityAuroc5fold": 0.9243,
+          "framingAurocOfficialSplit": 0.8423
+        },
+        "scope": "Triage signals for toxicity and media/framing STYLE. Not a truth, accuracy, or hallucination detector."
+      },
+      "grounded": false,
+      "groundingRequested": false,
+      "groundingMode": "off",
+      "grounding": null,
+      "memoryRecall": {
+        "injected": 3,
+        "verified": 3,
+        "unsigned": 0,
+        "rejected": 0,
+        "roots": [
+          "13dab5d217e255450ba624f7b2506140e273c49142ad8a0cb846dc6c43552e0e",
+          "4da4de5d87316397ffc42cd303a1fcab584742eef4b75347d64ca2760692b08f",
+          "fab53531762b98a5e78154bafecc0440114b37b0aad23f8708e6867d921b2450"
+        ]
+      },
+      "attachmentMeta": null,
+      "seal": {
+        "algo": "SHA-256",
+        "leaves": [
+          {
+            "label": "QUERY",
+            "sha256": "7f95b5d08e8c6b57d7957f2b3a50a469be74cb65f04a814584aa381de43e40b9"
+          },
+          {
+            "label": "RESPONSE",
+            "sha256": "9e98237738cdc5659d73df68b17d538e7c4ba1cf2919d338ad5344f7d9362bd3"
+          },
+          {
+            "label": "RECEIPT",
+            "sha256": "d0f2a31f2731519041fcd491a0c220d3be32bd20c1e9d8343659e2c87582183d"
+          },
+          {
+            "label": "BIAS",
+            "sha256": "0bd7341aa80884085737f1cd4420734a01a3162de526b9d092d3558879548dcd"
+          },
+          {
+            "label": "MEMORY",
+            "sha256": "96b226c8f8f6f9496c6915f128645eda9dbefdf3d6591d880bcef275219e36aa"
+          },
+          {
+            "label": "TIMING",
+            "sha256": "3b009d1ba2e0508bd0b5125773c176c789727ae86d451fcf27981fb71c4f2232"
+          }
+        ],
+        "root": "23fe4d6fa2ae3d27f12fe6a7ceff779f98162d74615f7ac0728b0317e04d0952",
+        "sealedAt": "2026-08-08T14:30:45.809Z",
+        "sig": {
+          "alg": "Ed25519",
+          "keyId": "8b4d8aa466c356e6",
+          "signature": "LQMBhnck0Co5tYrl/89OZ56HRU5bjyKGSWsuXKPVRUho4Czjsx3wBU735RnWt5mcVTcHKBx2lzm3gaVPLZypBg=="
+        }
+      },
+      "timingMs": {
+        "total": 2953,
+        "llm": 817
+      },
+      "sessionChainHash": "7e5c2f2ec5e18d6a66e535dac27bee49e684f592b7859e90c087529f13fb44f4"
+    },
+    {
+      "query": "Who won the 2026 FIFA World Cup final, what was the score, and who scored the goals?",
+      "response": "Spain won the 2026 FIFA World Cup, defeating Argentina 1-0 in the final. The decisive goal was scored by Ferran Torres in the 106th minute of extra time. The final match took place on July 19, 2026, at MetLife Stadium in New Jersey.",
+      "model": "gemini-2.5-flash",
+      "requestedModel": "gpt-oss-120b",
+      "modelOverridden": true,
+      "receipt": {
+        "priceSheetDate": "2026-07-24",
+        "model": "gemini-2.5-flash",
+        "rates": {
+          "inPerM": 0.3,
+          "outPerM": 2.5
+        },
+        "usage": {
+          "inputTokens": 1211,
+          "outputTokens": 278,
+          "cachedInputTokens": 0
+        },
+        "directUsd": 0.0010583,
+        "uncachedInputTokens": 1211,
+        "cachedInputTokens": 0,
+        "cacheRatePerM": 0.075,
+        "cacheWriteTokens": 0,
+        "cacheWriteRatePerM": 0.375,
+        "groundingUsd": 0.035,
+        "searchRequests": 1,
+        "searchUnitUsd": 0.035,
+        "infraUsd": 0.001802915,
+        "supportUsd": 0.005408745,
+        "supportSplit": {
+          "server": 0.001622624,
+          "development": 0.002163498,
+          "steward": 0.001081749,
+          "reserve": 0.000540875
+        },
+        "totalUsd": 0.04326996,
+        "chargedUsd": 0,
+        "tier": "free"
+      },
+      "biasScreen": {
+        "version": "bias_v1",
+        "toxicity": 0.0045,
+        "toxicityPctile": 30,
+        "framing": 0.0018,
+        "framingPctile": 19,
+        "validated": {
+          "toxicityAuroc5fold": 0.9243,
+          "framingAurocOfficialSplit": 0.8423
+        },
+        "scope": "Triage signals for toxicity and media/framing STYLE. Not a truth, accuracy, or hallucination detector."
+      },
+      "grounded": true,
+      "groundingRequested": true,
+      "groundingMode": "relay",
+      "grounding": {
+        "sources": [
+          {
+            "title": "cbsnews.com",
+            "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFPLoh-o7sg1OqswMICXJxllj1gHRzOGXXws7EDHmOhLlfzkqix4pd01VU4t-WxTv2jKhNv09PCoNA5bopyUYRALasBlmgY0Mu4LPzvmXOvcqc57_KjukapGesDXCItJoII3Iy_pc5LX2W5IH_qX72y8vf9dLcdywbZbE1u0xwjvCdnHKra7RNZOw=="
+          },
+          {
+            "title": "youtube.com",
+            "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQENRH-AQ4T-1NBKgRQFTr6BC9k39tWr5a_zKwrsb8jZi1Kuygy1Pj6ac5f61lN0rdixP8y9j_AGjW1oGZ7RFdv-0IXqlCrlerVSAZ2iq2C9BFTLG326taU7TjsTrx4E8geXPHuX2gI="
+          },
+          {
+            "title": "wikipedia.org",
+            "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGeiRb3WxPu93SdhLAZckDZUw-1ybO58siaNTZrNPZWDSj8IGIFpmnUFsv_mW9Psq6LiPjZ6OhzFBxoxiG9JLpfM-8L47Yxh-L8tluU9BSMyTrCPgksQfpyc5KKWGCnTlMWdxYxQhGBkaTYB4w="
+          },
+          {
+            "title": "britannica.com",
+            "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGjY3Gz6DWXoI2K-WD9s4m8rwRnOws_N8n2mzUt5Ukl5hwr2dg0OE-6YImpdy6mt3Vpvjg4hjpwQM2zLiLBxFsenfxzVW2mZrtAXUN3f9p_3_jztHtGadF9rASt6oK7csQGQqMSRaoSu6OXGfpUJXADKa79QFLIfH3y"
+          },
+          {
+            "title": "fifa.com",
+            "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGQ-696IviA3QKuutrPXr-obJfcq-ddzMJHdWo-oB_qUROfRk6BtmVhDZ_yBK4J9N7GN0JApKaEmIy2eeYjZEoDxqm8FDGDe1xTX2um-hOdOEz4stYiPdsxR5m1eshKBtN-ldQZ3IqRxbZlmhi9Z_FuB6v-DQAZCRPq9MSHJPDRn5qRusj2wmyHlKooRxbmwyH61aHGVQe-FfdD1C4dZzKoiiFsR49p8H1ytwi8y0tXStk="
+          },
+          {
+            "title": "fifa.com",
+            "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGQtQy0f8z3ULsLZh9kzG3pIQrasleLvsy80azfwFop6vn_0dsIEBoDmm_lU31iiD-_ARzFD92H4n1PSxk8fyUP_SW98CZVaiQSiQLwmUkEcX2K89heexWAdaetMWQOKFo6SOwQxlTCpAlf8M1Y8g-qN4Zfa0ZLpT1RYM82MyvN2Q=="
+          },
+          {
+            "title": "facebook.com",
+            "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGLoQaMiL81drsmdkKauNHfZlzMWvI1iSwYCYI-y-5QRYVFbpVfVHMzWHoYagLxNZHT6x4igEUF5Qowc5S9JuxKt2LFEayU-ICiJIwURRop5UeASesXpkJUpFyW5Xj6TiAQPrHyd1awt_9ltxK6_6vHpurqcN64W3fJPD1zy0U-xuTDUau9svg37dh0FlPRiTdYIms5p5f6_Fx9TgtlHzp4T4-7QEA06QJoiHcW3baSEorrI9dby3YSyEoF1ipXA8kTgjGayC0="
+          }
+        ],
+        "searchQueries": [
+          "who won 2026 FIFA World Cup final",
+          "2026 FIFA World Cup final score",
+          "2026 FIFA World Cup final goal scorers"
+        ]
+      },
+      "memoryRecall": {
+        "injected": 3,
+        "verified": 3,
+        "unsigned": 0,
+        "rejected": 0,
+        "roots": [
+          "13dab5d217e255450ba624f7b2506140e273c49142ad8a0cb846dc6c43552e0e",
+          "4da4de5d87316397ffc42cd303a1fcab584742eef4b75347d64ca2760692b08f",
+          "fab53531762b98a5e78154bafecc0440114b37b0aad23f8708e6867d921b2450"
+        ]
+      },
+      "attachmentMeta": null,
+      "seal": {
+        "algo": "SHA-256",
+        "leaves": [
+          {
+            "label": "QUERY",
+            "sha256": "f69a649dde82218913893ed4669c13870037d831edc229b6a793fb32acfd43ea"
+          },
+          {
+            "label": "RESPONSE",
+            "sha256": "cf1f6523028f7285e49bac28f198322b80e0f3f856074e39501c8f14a09c8f33"
+          },
+          {
+            "label": "SOURCES",
+            "sha256": "1b00099b00b667f2ab86ba34d941ac6e7ad7aa617be68f8f1bceeebb1ca5b422"
+          },
+          {
+            "label": "RECEIPT",
+            "sha256": "d80353c4b06279ff037a80a67bb98c44f02ed0bab9cefd0f8b9bbf8b7fb89e89"
+          },
+          {
+            "label": "BIAS",
+            "sha256": "fb1921b14fc0d689e18e28799628cd251efa7277de26788b62f987fc774facdc"
+          },
+          {
+            "label": "MEMORY",
+            "sha256": "96b226c8f8f6f9496c6915f128645eda9dbefdf3d6591d880bcef275219e36aa"
+          },
+          {
+            "label": "TIMING",
+            "sha256": "22329c095548c5e5465604a6499f4278bce3bbf214386baa7b22fae56afd09cf"
+          }
+        ],
+        "root": "146db7cc342d65af49b84f7edaaa81038b00af68fa740a0d03f394c992908f38",
+        "sealedAt": "2026-08-08T14:31:17.478Z",
+        "sig": {
+          "alg": "Ed25519",
+          "keyId": "8b4d8aa466c356e6",
+          "signature": "DFKi1grqyk0H1wWpx6kKw0H1aAxcOjkVtBp5p7ursKUek9zcSQY2rMSurFHqxd4x2rEVSJn40R25GPl+GsKvBg=="
+        }
+      },
+      "timingMs": {
+        "total": 3760,
+        "llm": 3467
+      },
+      "sessionChainHash": "52e550dbd3334b6f9e7c388705218d55c0e033e7c2b7fac04706a0def78853a8"
+    },
+    {
+      "query": "In two sentences, what is the difference between TCP and UDP?",
+      "response": "TCP is a connection‑oriented protocol that guarantees reliable, ordered delivery of data by using acknowledgments, retransmissions, and flow control. UDP is connection‑less, sending packets without establishing a session or ensuring they arrive, so it offers lower latency but no delivery guarantees.",
+      "model": "gpt-oss-120b",
+      "requestedModel": "gpt-oss-120b",
+      "modelOverridden": false,
+      "receipt": {
+        "priceSheetDate": "2026-07-24",
+        "model": "gpt-oss-120b",
+        "rates": {
+          "inPerM": 0.15,
+          "outPerM": 0.6
+        },
+        "usage": {
+          "inputTokens": 1222,
+          "outputTokens": 103,
+          "cachedInputTokens": 0
+        },
+        "directUsd": 0.0002451,
+        "uncachedInputTokens": 1222,
+        "cachedInputTokens": 0,
+        "cacheRatePerM": 0.15,
+        "cacheWriteTokens": 0,
+        "cacheWriteRatePerM": 0.1875,
+        "groundingUsd": 0,
+        "searchRequests": 0,
+        "searchUnitUsd": 0.035,
+        "infraUsd": 0.000012255,
+        "supportUsd": 0.000036765,
+        "supportSplit": {
+          "server": 0.000011029,
+          "development": 0.000014706,
+          "steward": 0.000007353,
+          "reserve": 0.000003676
+        },
+        "totalUsd": 0.00029412,
+        "chargedUsd": 0,
+        "tier": "free"
+      },
+      "biasScreen": {
+        "version": "bias_v1",
+        "toxicity": 0.1565,
+        "toxicityPctile": 50,
+        "framing": 0.0022,
+        "framingPctile": 20,
+        "validated": {
+          "toxicityAuroc5fold": 0.9243,
+          "framingAurocOfficialSplit": 0.8423
+        },
+        "scope": "Triage signals for toxicity and media/framing STYLE. Not a truth, accuracy, or hallucination detector."
+      },
+      "grounded": false,
+      "groundingRequested": false,
+      "groundingMode": "off",
+      "grounding": null,
+      "memoryRecall": {
+        "injected": 3,
+        "verified": 3,
+        "unsigned": 0,
+        "rejected": 0,
+        "roots": [
+          "13dab5d217e255450ba624f7b2506140e273c49142ad8a0cb846dc6c43552e0e",
+          "7e5bcc69ab486fe062228eda6a72913f93ae2ab1ed72f049c4382d8bfe91b84f",
+          "6c569ed3c18691cc034f77da733029c1720cdb6b60bad0822699ac0a6b36775d"
+        ]
+      },
+      "attachmentMeta": null,
+      "seal": {
+        "algo": "SHA-256",
+        "leaves": [
+          {
+            "label": "QUERY",
+            "sha256": "e3fe730e51365ab20adad649b75246de621742568379a68d4f82936a200ea340"
+          },
+          {
+            "label": "RESPONSE",
+            "sha256": "399b1fb56dd84cf40d317d1de4a862b72997ddc0833c92e1d21982cb811de223"
+          },
+          {
+            "label": "RECEIPT",
+            "sha256": "f041eedcff3c5387493d7a6414e21c47825f4efcac878c3f15c77a23b7242906"
+          },
+          {
+            "label": "BIAS",
+            "sha256": "d4348815ab66271e7bf21a6a6f1f67af97b1f458bbe9b449352e3a048690ed1a"
+          },
+          {
+            "label": "MEMORY",
+            "sha256": "5d295397cd4d9e0b2769ee6ad21a44c0c7316ec7c75273008c420d64ba663b1d"
+          },
+          {
+            "label": "TIMING",
+            "sha256": "8f510470f2221504d9280768a1740bfbf4a4be89933519b4ebc970043bbef609"
+          }
+        ],
+        "root": "a9b76c9124dc2b34801d1932a26785dc6b86ab5b5dcb28f9ec1291555ab3ae32",
+        "sealedAt": "2026-08-08T14:32:28.990Z",
+        "sig": {
+          "alg": "Ed25519",
+          "keyId": "8b4d8aa466c356e6",
+          "signature": "nb8f/txtPy0IpyZxON9QP1nCX9bHYaY6IhLwPCIv+SRS1PatnU7Vp8el52eZWLTFPUrWwHWPzKs+Npt8hLRTBQ=="
+        }
+      },
+      "timingMs": {
+        "total": 798,
+        "llm": 478
+      },
+      "sessionChainHash": "7867db1504d576eef4446a143d9465f2c02936682ec27a38a46d6a42013e9953"
+    }
+  ],
+  "sessionChainRoot": "7867db1504d576eef4446a143d9465f2c02936682ec27a38a46d6a42013e9953",
+  "sealPublicKey": {
+    "alg": "Ed25519",
+    "keyId": "8b4d8aa466c356e6",
+    "publicKeySpkiB64": "MCowBQYDK2VwAyEAHnJBSfHHo43BguvxJNAcLeu7NRX4mOgYkeXaLJqBnt4=",
+    "signedPayloadFormat": "VF-SEAL-v1|<merkleRootHex>|<sealedAtIso>"
+  },
+  "verify": "Leaves are SHA-256 hex digests produced server-side over the exchange (see seal.leaves labels). The Merkle root pairs leaves left-to-right, duplicating the last when odd, hashing hex-string concatenations. The session chain is SHA-256(prevChainHash + seal.root), genesis = SHA-256('VERUM_FRONTIER_SESSION_GENESIS' + startedAt). Any SHA-256 tool can re-verify. Where seal.sig is present, it is an Ed25519 signature over 'VF-SEAL-v1|<root>|<sealedAt>' by sealPublicKey. IMPORTANT — those three checks prove the SEAL is authentic, not that the text printed beside it is what was sealed. To bind the readable transcript to the seal you must recompute the content leaves and confirm they appear in seal.leaves: QUERY = SHA-256(JSON.stringify({q: <query>, ts: <seal.sealedAt>})), RESPONSE = SHA-256(JSON.stringify({r: <response>, model: <model>})). Where present: SOURCES = SHA-256(JSON.stringify(<grounding.sources URIs, in order>)), MEMORY = SHA-256(JSON.stringify(<memoryRecall.roots>)), DOCUMENT = SHA-256(JSON.stringify({name: <attachment name>, doc: <full attachment text>})) — the attachment's text is NOT included in this export (it is yours and can be large), so DOCUMENT is verifiable only against your own copy of the file you attached; attachmentMeta records its name and character count. Serialization is JSON.stringify semantics: keys in the order given, no whitespace, non-ASCII characters NOT escaped, hashed as UTF-8. Without this step, altering the visible text is undetectable. A pure-stdlib reference verifier that performs all four checks is at github.com/uu2142-dev/alice-evidence (memory/verify_session.py)."
+}

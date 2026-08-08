@@ -637,6 +637,8 @@ export default function VerumFrontier() {
             : "INTENT → RECALL → LLM → GROUNDING → COST AUDIT → BIAS SCREEN → MERKLE SEAL"}
         </span>
         <span className="text-[10px] text-zinc-400 tracking-[0.08em]">
+          <a href="/verify" className="hover:text-white underline">VERIFY</a>
+          {" · "}
           <a href="/terms" className="hover:text-white underline">TERMS</a>
           {" · "}
           <a href="/privacy" className="hover:text-white underline">PRIVACY</a>

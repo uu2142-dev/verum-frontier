@@ -34,13 +34,15 @@ export default function NotFound() {
         <p style={{ color: "rgba(255,255,255,0.7)", fontSize: 13, lineHeight: 1.9, margin: "28px 0 12px" }}>
           Nothing is served at this path. If you followed a link expecting a
           verification page, note that sealed sessions are verified from the JSON
-          you download — not from a page here. Every exchange ships with its own
-          hashes, Ed25519 signature, and the exact steps to recompute them, so
-          verification does not depend on this site staying up.
+          you download. You can check one on the verify page below, or with any
+          SHA-256 tool — every exchange ships with its own hashes, Ed25519
+          signature, and the exact steps to recompute them, so verification does
+          not depend on this site staying up.
         </p>
 
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginTop: 24 }}>
           <Link href="/" style={link}>THE GATE</Link>
+          <Link href="/verify" style={link}>VERIFY A SESSION</Link>
           <Link href="/terms" style={link}>TERMS</Link>
           <Link href="/privacy" style={link}>PRIVACY</Link>
           <a href="https://github.com/uu2142-dev/alice-evidence" style={link} target="_blank" rel="noopener noreferrer">
