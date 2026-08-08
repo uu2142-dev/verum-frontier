@@ -450,8 +450,16 @@ async function callAnthropic(
   // refusal instead of reporting it honestly.
   if (data.stop_reason === "refusal") {
     return {
-      text: "This model declined to answer under its own safety policy (stop_reason: refusal). " +
-        "No content was generated. The receipt below reflects what was actually billed.",
+      // NOT model output — the gate wrote this. Said plainly, because the string
+      // lands in the assistant slot where a reader (and, until this was fixed,
+      // the next model in the thread) would take it for something the model said.
+      // The old wording also asserted the receipt "reflects what was actually
+      // billed", which we had never reconciled for this path; it now claims only
+      // what we can support — the counts the provider reported.
+      text: "⚠ GATE NOTE (not model output): this model declined the request under its own " +
+        "safety policy (stop_reason: refusal), and returned no content. The receipt shows the " +
+        "token counts the provider reported for this call.",
+      declined: true,
       usage,
       truncated: false,
       sources: [] as GroundingSource[],
@@ -932,6 +940,9 @@ export async function POST(req: Request) {
   // Gemini + Google Search and returns cited sources.
   const outputCap = paid ? MAX_OUTPUT_TOKENS_PAID : MAX_OUTPUT_TOKENS_FREE;
   let text: string, usage: Usage, truncated = false;
+  // Set when the PROVIDER declined and the gate substituted its own note, so the
+  // client and the sealed export can say that the text is ours, not the model's.
+  let declined = false;
   let grounding: { sources: GroundingSource[]; searchQueries: string[] } | null = null;
   let searchRequests = 0;
   try {
@@ -945,6 +956,7 @@ export async function POST(req: Request) {
       // Native: the selected model searches and reasons in one turn.
       const out = await callAnthropic(callSpec, providerMessages, memoryContext, outputCap, groundingRequested);
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
+      declined = "declined" in out && out.declined === true;
       searchRequests = out.searchRequests;
       if (groundingRequested && out.sources.length) {
         grounding = { sources: out.sources, searchQueries: out.searchQueries ?? [] };
@@ -1071,6 +1083,7 @@ export async function POST(req: Request) {
     routing,
     truncated,
     outputCap,
+    declined,
     stages: [
       { label: "INTENT CHECK v1", detail: "format + length validation", ms: tIntent - t0 },
       ...(routing ? [{

@@ -58,6 +58,7 @@ interface Exchange {
   routing?: { mode: string; rule: string } | null;
   attachmentMeta?: { name: string; chars: number } | null;
   truncated?: boolean;
+  declined?: boolean; // provider refused; `response` is a gate note, not model output
   outputCap?: number;
   grounded?: boolean;
   groundingRequested?: boolean;
@@ -151,6 +152,14 @@ function buildSessionPayload(startedAt: string, exchanges: Exchange[], chainRoot
       // answer. Recall picking the wrong prior session is invisible without this.
       memoryRecall: ex.memoryRecall ?? null,
       attachmentMeta: ex.attachmentMeta ?? null,
+      // Whether the answer was cut off at the output cap, and whether the
+      // provider declined. Without these a reader of the JSON cannot tell a
+      // finished answer from a truncated one — a sealed 2026-08-08 exchange
+      // stops mid-sentence at exactly 4,096 tokens with nothing to say so — nor
+      // tell model output from a gate note occupying the same field.
+      truncated: ex.truncated ?? false,
+      outputCap: ex.outputCap ?? null,
+      declined: ex.declined ?? false,
       seal: ex.seal,
       timingMs: ex.timingMs,
       sessionChainHash: ex.chainHash,
@@ -965,7 +974,13 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
       // Working memory: the last 3 exchanges ride along as history.
       // Older relevant context arrives via MEMORY RECALL instead — smaller
       // prompts, smaller receipts, and the archive does the remembering.
-      const recent = thread.slice(-3);
+      // A declined turn carries NO model output — its "response" is a note the
+      // gate wrote. Replaying that as an assistant message put words in a
+      // model's mouth: in a sealed 2026-08-08 session, Opus 4.8 read two such
+      // notes in its history and correctly objected that it hadn't written
+      // them. Drop those turns from history entirely rather than invent an
+      // assistant turn that never happened.
+      const recent = thread.slice(-3).filter(ex => !ex.declined);
       const history = recent.flatMap(ex => ([
         { role: "user" as const, content: ex.query },
         { role: "assistant" as const, content: ex.response },
@@ -1016,6 +1031,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
         routing: data.routing ?? null,
         attachmentMeta: data.attachmentMeta ?? null,
         truncated: data.truncated ?? false,
+        declined: data.declined ?? false,
         outputCap: data.outputCap,
         grounded: data.grounded ?? false,
         groundingRequested: data.groundingRequested ?? false,
@@ -1035,16 +1051,22 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
       }
       setPasteBuf("");
       setAttachOpen(false);
-      // Long-term memory: every sealed exchange joins the archive.
-      const mem = loadMemory();
-      mem.push({
-        ts: new Date().toISOString(),
-        query: q, response: data.text, modelId: data.modelId,
-        sealedAt: data.seal.sealedAt, root: data.seal.root,
-        leaves: data.seal.leaves, sig: data.seal.sig,
-      });
-      saveMemory(mem);
-      setMemCount(Math.min(mem.length, 300));
+      // Long-term memory: every sealed exchange with an actual answer joins the
+      // archive. A declined turn is excluded — its "response" is the gate's own
+      // note, and archiving it would let recall inject "Answer was: ⚠ GATE NOTE…"
+      // into a later session as verified sealed memory. Same fabricated
+      // authorship as the history bug, but crossing sessions and carrying a seal.
+      if (!data.declined) {
+        const mem = loadMemory();
+        mem.push({
+          ts: new Date().toISOString(),
+          query: q, response: data.text, modelId: data.modelId,
+          sealedAt: data.seal.sealedAt, root: data.seal.root,
+          leaves: data.seal.leaves, sig: data.seal.sig,
+        });
+        saveMemory(mem);
+        setMemCount(Math.min(mem.length, 300));
+      }
       setQuota(data.quota);
       if (data.wallet) {
         setWallet(w => {
