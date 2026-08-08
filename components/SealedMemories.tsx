@@ -107,9 +107,9 @@ export default function SealedMemories({ onBack }: { onBack?: () => void }) {
         {/* header */}
         <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
           <div>
-            <div style={{ fontSize: 8, letterSpacing: "0.3em", color: "#b39ddb" }}>
+            <h2 style={{ fontSize: 8, letterSpacing: "0.3em", color: "#b39ddb", margin: 0, fontWeight: "inherit" }}>
               🧠 SEALED MEMORIES · YOUR VAULT
-            </div>
+            </h2>
             <div style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", marginTop: 4, lineHeight: 1.7 }}>
               {sessions.length} sealed {sessions.length === 1 ? "session" : "sessions"} · {totalExchanges}{" "}
               {totalExchanges === 1 ? "exchange" : "exchanges"} · {memCount} recall{" "}

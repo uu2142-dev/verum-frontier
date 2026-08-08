@@ -626,16 +626,20 @@ export default function VerumFrontier() {
 
       {/* ── FOOTER ────────────────────────────────────────────────────── */}
       <footer className="absolute bottom-0 left-0 right-0 z-50 px-3 py-1 bg-black border-t border-white/5 flex justify-between items-center">
-        <span className="text-[7px] text-zinc-600 tracking-[0.15em] hidden md:block">RABBIT HOLE AI // MIT LICENSE</span>
-        <span className="text-[7px] text-zinc-700 tracking-[0.1em] hidden lg:block">
+        {/* zinc-600 on black measures 2.72:1 and zinc-700 2.01:1 — both fail WCAG
+            AA (4.5:1), and this row carries the Terms and Privacy links. zinc-400
+            is 8.19:1. Tracking tightened too: wide tracking on small monospace is
+            what actually costs legibility. */}
+        <span className="text-[10px] text-zinc-400 tracking-[0.08em] hidden md:block">RABBIT HOLE AI // MIT LICENSE</span>
+        <span className="text-[10px] text-zinc-400 tracking-[0.05em] hidden lg:block">
           {mode === "demo"
             ? "BIAS CHECKER → ANTI-DATA → LLM → RESPONSE AUDIT → MERKLE ARCHIVIST"
             : "INTENT → RECALL → LLM → GROUNDING → COST AUDIT → BIAS SCREEN → MERKLE SEAL"}
         </span>
-        <span className="text-[7px] text-zinc-600 tracking-[0.15em]">
-          <a href="/terms" className="hover:text-zinc-400">TERMS</a>
+        <span className="text-[10px] text-zinc-400 tracking-[0.08em]">
+          <a href="/terms" className="hover:text-white underline">TERMS</a>
           {" · "}
-          <a href="/privacy" className="hover:text-zinc-400">PRIVACY</a>
+          <a href="/privacy" className="hover:text-white underline">PRIVACY</a>
           {" · "}
           JEREMIAH DAWSON · rabbitholeai.ai
         </span>

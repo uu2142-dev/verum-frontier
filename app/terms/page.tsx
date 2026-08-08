@@ -21,7 +21,7 @@ export default function Terms() {
           Terms of Use
         </h1>
         <p style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", letterSpacing: "0.1em" }}>
-          PLAIN-LANGUAGE TERMS · EFFECTIVE JULY 2026 · WILL BE FORMALIZED BEFORE ANY PAID LAUNCH
+          PLAIN-LANGUAGE TERMS · EFFECTIVE JULY 2026 · PAID CREDITS ARE LIVE; THESE TERMS GOVERN THEM
         </p>
 
         <h2 style={S.h2}>What this is</h2>

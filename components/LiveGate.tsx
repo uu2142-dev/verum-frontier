@@ -460,9 +460,12 @@ async function sha256Hex(s: string): Promise<string> {
 function ReceiptCard({ r, color }: { r: Receipt; color: string }) {
   return (
     <div style={{ fontFamily: "monospace", fontSize: 9, lineHeight: 1.9 }}>
-      <div style={{ color: "rgba(255,255,255,0.3)", letterSpacing: "0.2em", fontSize: 7, marginBottom: 4 }}>
+      {/* Real heading, styled to look identical — the receipt/bias/seal panels
+          were styled divs, leaving the whole document with a single h1 and no
+          structure to navigate by. */}
+      <h3 style={{ color: "rgba(255,255,255,0.3)", letterSpacing: "0.2em", fontSize: 7, marginBottom: 4, margin: "0 0 4px", fontWeight: "inherit" }}>
         COST-PLUS RECEIPT · PRICE SHEET {r.priceSheetDate}
-      </div>
+      </h3>
       <Row k="DIRECT API COST" v={fmtUsd(r.directUsd)} strong color={color} />
       {r.cachedInputTokens && r.cachedInputTokens > 0 ? (
         <>
@@ -522,9 +525,9 @@ function BiasCard({ b }: { b: BiasResult | null }) {
   );
   return (
     <div style={{ fontFamily: "monospace", fontSize: 9, lineHeight: 1.8 }}>
-      <div style={{ color: "rgba(200,148,26,0.6)", fontSize: 7, letterSpacing: "0.2em", marginBottom: 4 }}>
+      <h3 style={{ color: "rgba(200,148,26,0.6)", fontSize: 7, letterSpacing: "0.2em", margin: "0 0 4px", fontWeight: "inherit" }}>
         BIAS SCREEN · VALIDATED {b.version.toUpperCase()} · AUROC {b.validated.toxicityAuroc5fold?.toFixed(2)} tox / {b.validated.framingAurocOfficialSplit?.toFixed(2)} framing (held-out)
-      </div>
+      </h3>
       <div style={{ display: "flex", justifyContent: "space-between", color: "rgba(255,255,255,0.45)" }}>
         <span>TOXICITY</span>
         <span style={{ color: b.toxicityPctile > 80 ? "#e74c3c" : "rgba(255,255,255,0.7)" }}>p{b.toxicityPctile}</span>
@@ -590,9 +593,9 @@ function GroundingView({ ex }: { ex: Exchange }) {
 function SealView({ ex }: { ex: Exchange }) {
   return (
     <div style={{ fontFamily: "monospace", fontSize: 8, lineHeight: 1.8 }}>
-      <div style={{ color: "rgba(200,148,26,0.6)", fontSize: 7, letterSpacing: "0.2em", marginBottom: 4 }}>
+      <h3 style={{ color: "rgba(200,148,26,0.6)", fontSize: 7, letterSpacing: "0.2em", margin: "0 0 4px", fontWeight: "inherit" }}>
         MERKLE SEAL · REAL SHA-256
-      </div>
+      </h3>
       {ex.seal.leaves.map(l => (
         <div key={l.label} style={{ display: "flex", gap: 8 }}>
           <span style={{ color: "rgba(255,255,255,0.3)", minWidth: 62 }}>{l.label}</span>
@@ -837,6 +840,13 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
   const creditsActive = !!(wallet && wallet.balanceUsd > 0.0001);
   const gateOpen = remaining !== 0 || creditsActive;
 
+  // ONE predicate for "can this turn be sent", read by the SEND button, the
+  // Enter key, and send() itself. They used to disagree: the button required
+  // gateOpen, Enter called send() unconditionally, and send()'s own guard only
+  // checked (!q || sending || !modelId). So Enter fired a send the button was
+  // visibly refusing — with the composer emptied and nothing to show for it.
+  const canSend = !sending && !!input.trim() && !!modelId && gateOpen;
+
   // Will THIS turn actually cost money? Premium is credits-only and always
   // charges; a free-council model only charges once the daily free tier is
   // spent and a funded wallet takes over. No charge, no estimate to show.
@@ -867,7 +877,9 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
 
   const send = useCallback(async () => {
     const q = input.trim();
-    if (!q || sending || !modelId) return;
+    // gateOpen belongs here too — without it this function would still accept a
+    // send the UI is refusing, from any caller.
+    if (!q || sending || !modelId || !gateOpen) return;
     setSending(true);
     setError(null);
     try {
@@ -966,7 +978,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
     } finally {
       setSending(false);
     }
-  }, [input, sending, modelId, thread, wallet, models, routerMode, attachment, attachPinned, groundOn]);
+  }, [input, sending, modelId, thread, wallet, models, routerMode, attachment, attachPinned, groundOn, gateOpen, recallOff]);
 
   const downloadSession = useCallback(() => {
     const payload = buildSessionPayload(startedRef.current, thread, chainRef.current, sealKey);
@@ -1406,6 +1418,11 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
               <button key={m.id} onClick={() => {
                   setModelId(m.id); setRouterMode(null);
                   try { localStorage.setItem(MODEL_KEY, m.id); } catch { /* ignore */ }
+                  // Picking a credits-only model with no balance used to be a dead
+                  // end whose only explanation was a hover tooltip. Open the buy
+                  // row instead — keyboard- and touch-reachable, and the pre-send
+                  // estimate then prices this exact model against the balance.
+                  if (locked && payments.enabled) setBuyOpen(true);
                 }}
                 aria-pressed={active}
                 aria-label={explain}
@@ -1626,7 +1643,14 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
             aria-label="Ask through the gate"
             value={input}
             onChange={e => setInput(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+            onKeyDown={e => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                // Same predicate the button uses. If it refuses, do nothing at
+                // all — never silently swallow what the user typed.
+                if (canSend) send();
+              }
+            }}
             placeholder={
               !gateOpen
                 ? "Free tier used for today (resets 00:00 UTC) — buy prepaid credits above to keep going, cost-plus receipts included."
@@ -1645,12 +1669,12 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
           />
           <button
             onClick={send}
-            disabled={sending || !input.trim() || !gateOpen}
+            disabled={!canSend}
             style={{
               fontFamily: "monospace", fontSize: 9, letterSpacing: "0.2em", cursor: "pointer",
               padding: "0 18px", border: "1px solid rgba(200,148,26,0.5)",
               background: sending ? "rgba(200,148,26,0.05)" : "rgba(200,148,26,0.12)",
-              color: "#c8941a", opacity: (sending || !input.trim() || !gateOpen) ? 0.4 : 1,
+              color: "#c8941a", opacity: canSend ? 1 : 0.4,
             }}
           >{sending ? "…" : "SEND"}</button>
         </div>

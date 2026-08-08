@@ -105,9 +105,9 @@ export default function ModelCards({ onPick }: { onPick?: () => void }) {
     <div className="relative z-30 w-full overflow-y-auto" style={{ height: "calc(100dvh - 120px)" }}>
       <div className="mx-auto w-full max-w-4xl px-4 md:px-8 pt-4 pb-16" style={{ fontFamily: "monospace" }}>
 
-        <div style={{ fontSize: 8, letterSpacing: "0.3em", color: "#8ab4f8" }}>
+        <h2 style={{ fontSize: 8, letterSpacing: "0.3em", color: "#8ab4f8", margin: 0, fontWeight: "inherit" }}>
           ⚙ MODELS · WHAT THE GATE CAN ACTUALLY CALL
-        </div>
+        </h2>
         <div style={{ fontSize: 9, color: "rgba(255,255,255,0.45)", marginTop: 6, lineHeight: 1.8, marginBottom: 14 }}>
           Only models with a configured provider key are listed — if you can see it here, it runs.
           Rates are the providers&apos; own published prices; your cost adds 5% infrastructure and
