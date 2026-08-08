@@ -740,6 +740,10 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
   // sidebar; on phones they were simply gone — the architecture proof invisible
   // and no way to download a seal. This drives a mobile-only equivalent.
   const [mobilePipeOpen, setMobilePipeOpen] = useState(false);
+  // The 10-model chip grid wrapped to four rows and ate ~230px on every screen.
+  // Collapsed into a single current-model pill that opens a select tray; the
+  // primary controls (GROUND IT, ALICE routing) stay inline.
+  const [modelTrayOpen, setModelTrayOpen] = useState(false);
   const [buying, setBuying] = useState(false);
   const [claimNote, setClaimNote] = useState<string | null>(null);
   const [routerMode, setRouterMode] = useState<RouterMode>(null);
@@ -1527,43 +1531,92 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
               {label}
             </button>
           ))}
-          {models.map(m => {
-            const active = !routerMode && modelId === m.id;
-            const premium = m.tier === "premium";
-            const locked = premium && !creditsActive;
-            // The same sentence goes to title AND aria-label: a native tooltip is
-            // unreachable by keyboard and touch, so on its own it hides the
-            // credits-only rule from exactly the users who most need it stated.
-            const explain = premium
-              ? `${m.name} — premium, credits only. ${locked
-                  ? "Add credits to unlock it; the free council stays free."
-                  : "Paid from your credits at exact cost-plus, receipted like everything else."}`
-              : `${m.name} — free council.`;
+          {/* Current-model pill → opens the select tray. Replaces the ten-chip grid. */}
+          {(() => {
+            const sel = models.find(m => m.id === modelId);
+            const selActive = sel && !routerMode;
             return (
-              <button key={m.id} onClick={() => {
-                  setModelId(m.id); setRouterMode(null);
-                  try { localStorage.setItem(MODEL_KEY, m.id); } catch { /* ignore */ }
-                  // Picking a credits-only model with no balance used to be a dead
-                  // end whose only explanation was a hover tooltip. Open the buy
-                  // row instead — keyboard- and touch-reachable, and the pre-send
-                  // estimate then prices this exact model against the balance.
-                  if (locked && payments.enabled) setBuyOpen(true);
-                }}
-                aria-pressed={active}
-                aria-label={explain}
-                title={explain}
-                style={{
-                fontFamily: "monospace", fontSize: 8, letterSpacing: "0.08em", cursor: "pointer",
-                padding: "4px 8px", background: active ? `${m.color}18` : "rgba(4,3,10,0.8)",
-                border: `1px solid ${active ? m.color : premium ? "rgba(200,148,26,0.35)" : "rgba(255,255,255,0.12)"}`,
-                color: active ? m.color : "rgba(255,255,255,0.45)",
-                opacity: routerMode ? 0.55 : locked ? 0.5 : 1,
-              }}>
-                {premium ? "💳 " : ""}{m.name.toUpperCase()}
-                <span style={{ opacity: 0.55 }}> · {m.family} · ${m.inPerM.toFixed(2)}/${m.outPerM.toFixed(2)} per M</span>
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setModelTrayOpen(o => !o)}
+                  aria-haspopup="listbox"
+                  aria-expanded={modelTrayOpen}
+                  aria-label={`Selected model: ${sel ? sel.name : "none"}. Open the model selector.`}
+                  style={{
+                    fontFamily: "monospace", fontSize: 8, letterSpacing: "0.08em", cursor: "pointer",
+                    padding: "4px 8px",
+                    background: selActive ? `${sel!.color}18` : "rgba(4,3,10,0.8)",
+                    border: `1px solid ${selActive ? sel!.color : "rgba(255,255,255,0.18)"}`,
+                    color: selActive ? sel!.color : "rgba(255,255,255,0.6)",
+                    opacity: routerMode ? 0.55 : 1,
+                  }}
+                >
+                  {sel?.tier === "premium" ? "💳 " : ""}{sel ? sel.name.toUpperCase() : "SELECT MODEL"}
+                  {sel && <span style={{ opacity: 0.55 }}> · ${sel.inPerM.toFixed(2)}/${sel.outPerM.toFixed(2)}</span>}
+                  {" ▾"}
+                </button>
+                {modelTrayOpen && (
+                  <>
+                    {/* click-away backdrop */}
+                    <div onClick={() => setModelTrayOpen(false)} aria-hidden="true"
+                         style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                    <div role="listbox" aria-label="Choose a model" style={{
+                      position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 50,
+                      minWidth: 300, maxWidth: "min(92vw, 440px)", maxHeight: "60vh", overflowY: "auto",
+                      background: "rgba(4,3,10,0.98)", border: "1px solid rgba(255,255,255,0.15)",
+                      backdropFilter: "blur(12px)", padding: 6,
+                    }}>
+                      {(["free", "premium"] as const).map(tier => {
+                        const rows = models.filter(m => (m.tier ?? "free") === tier);
+                        if (!rows.length) return null;
+                        return (
+                          <div key={tier} style={{ marginBottom: 4 }}>
+                            <div style={{ fontSize: 7, letterSpacing: "0.2em", color: "rgba(255,255,255,0.3)", padding: "5px 6px 3px" }}>
+                              {tier === "free" ? "FREE COUNCIL · NO CREDITS NEEDED" : "PREMIUM · CREDITS ONLY"}
+                            </div>
+                            {rows.map(m => {
+                              const active = !routerMode && modelId === m.id;
+                              const premium = m.tier === "premium";
+                              const locked = premium && !creditsActive;
+                              const explain = premium
+                                ? `${m.name} — premium, credits only. ${locked
+                                    ? "Add credits to unlock it; the free council stays free."
+                                    : "Paid from your credits at exact cost-plus, receipted like everything else."}`
+                                : `${m.name} — free council.`;
+                              return (
+                                <button key={m.id} role="option" aria-selected={active} aria-label={explain} title={explain}
+                                  onClick={() => {
+                                    setModelId(m.id); setRouterMode(null);
+                                    try { localStorage.setItem(MODEL_KEY, m.id); } catch { /* ignore */ }
+                                    // Credits-only pick at zero balance opens the buy row —
+                                    // reachable by keyboard/touch, and the pre-send estimate
+                                    // then prices this exact model against the balance.
+                                    if (locked && payments.enabled) setBuyOpen(true);
+                                    setModelTrayOpen(false);
+                                  }}
+                                  style={{
+                                    display: "block", width: "100%", textAlign: "left", cursor: "pointer",
+                                    fontFamily: "monospace", fontSize: 9, padding: "6px 8px", marginBottom: 2,
+                                    background: active ? `${m.color}22` : "transparent",
+                                    border: `1px solid ${active ? m.color : "transparent"}`,
+                                    color: active ? m.color : "rgba(255,255,255,0.7)",
+                                    opacity: locked ? 0.6 : 1,
+                                  }}>
+                                  {premium ? "💳 " : ""}{m.name.toUpperCase()}
+                                  <span style={{ opacity: 0.55 }}> · {m.family} · ${m.inPerM.toFixed(2)}/${m.outPerM.toFixed(2)} per M</span>
+                                  {active && <span style={{ float: "right", color: m.color }}>✓</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
             );
-          })}
+          })()}
         </div>
 
         {/* GROUND IT override warning. A silent model substitution is exactly
