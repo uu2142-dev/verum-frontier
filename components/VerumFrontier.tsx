@@ -630,7 +630,9 @@ export default function VerumFrontier() {
             AA (4.5:1), and this row carries the Terms and Privacy links. zinc-400
             is 8.19:1. Tracking tightened too: wide tracking on small monospace is
             what actually costs legibility. */}
-        <span className="text-[10px] text-zinc-400 tracking-[0.08em] hidden md:block">RABBIT HOLE AI // MIT LICENSE</span>
+        <span className="text-[10px] text-zinc-400 tracking-[0.08em] hidden md:block">
+          RABBIT HOLE AI // <a href="https://github.com/uu2142-dev/alice-evidence" target="_blank" rel="noopener noreferrer" className="hover:text-white underline">MIT LICENSE</a>
+        </span>
         <span className="text-[10px] text-zinc-400 tracking-[0.05em] hidden lg:block">
           {mode === "demo"
             ? "BIAS CHECKER → ANTI-DATA → LLM → RESPONSE AUDIT → MERKLE ARCHIVIST"
