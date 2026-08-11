@@ -506,7 +506,7 @@ function ProofColumn({ s, accent }: { s: ProofSide; accent: string }) {
 
 function GroundingProof({ onClose }: { onClose: () => void }) {
   return (
-    <div style={{
+    <div className="grounding-proof-scroll" style={{
       marginBottom: 8, padding: "9px 11px", fontFamily: "monospace",
       border: "1px solid rgba(88,166,255,0.4)", background: "rgba(88,166,255,0.05)",
     }}>
@@ -731,6 +731,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
   const [wallet, setWallet] = useState<WalletState | null>(null);
   const [buyOpen, setBuyOpen] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);   // reveal THIS device's code
+  const [linkHelpOpen, setLinkHelpOpen] = useState(false); // 2-step how-to
   const [linkPaste, setLinkPaste] = useState("");    // adopt another device's
   const [linkArmed, setLinkArmed] = useState(false); // 2-step when replacing funds
   const [linking, setLinking] = useState(false);
@@ -1224,6 +1225,33 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
                   >{linkOpen ? "HIDE CODE" : "LINK ANOTHER DEVICE"}</button>
                 )}
               </div>
+
+              <button
+                onClick={() => setLinkHelpOpen(o => !o)}
+                aria-expanded={linkHelpOpen}
+                style={{
+                  alignSelf: "flex-start", fontSize: 8, fontFamily: "monospace", cursor: "pointer",
+                  letterSpacing: "0.1em", background: "none", border: "none", padding: 0,
+                  color: "rgba(88,166,255,0.85)",
+                }}
+              >{linkHelpOpen ? "▲" : "▸"} HOW TO USE THESE CREDITS ON YOUR PHONE OR LAPTOP</button>
+
+              {linkHelpOpen && (
+                <div style={{
+                  fontSize: 9, lineHeight: 1.7, color: "rgba(255,255,255,0.62)",
+                  border: "1px solid rgba(88,166,255,0.2)", background: "rgba(88,166,255,0.04)",
+                  padding: "7px 9px", display: "flex", flexDirection: "column", gap: 5,
+                }}>
+                  <div style={{ color: "rgba(255,255,255,0.72)" }}>
+                    Credits live in the wallet, not the browser — so a new device starts empty until you link it. Two steps:
+                  </div>
+                  <div><span style={{ color: "#c8941a" }}>1 · On the device that already has the credits</span> — open 💳 CREDITS, tap <strong>LINK ANOTHER DEVICE</strong>, then <strong>COPY</strong> the code.</div>
+                  <div><span style={{ color: "#c8941a" }}>2 · On this phone or laptop</span> — open 💳 CREDITS and <strong>paste that code</strong> into the field below. The same balance appears right away.</div>
+                  <div style={{ color: "rgba(255,255,255,0.4)" }}>
+                    Works either direction, phone ↔ desktop. The balance isn&apos;t copied — both devices spend one shared wallet. The code is like cash: anyone who has it can spend it, so send it only to yourself.
+                  </div>
+                </div>
+              )}
 
               {linkOpen && wallet && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>

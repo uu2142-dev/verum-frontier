@@ -4,6 +4,14 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Free-tier GROUND IT proof: below the lg breakpoint (1024px) the two columns
+   stack tall and would overflow the fixed-height composer (body is overflow:hidden),
+   clipping the result. Cap it so it scrolls internally there; desktop (columns
+   side by side) is unconstrained and shows in full. */
+@media (max-width: 1023px) {
+  .grounding-proof-scroll { max-height: 42vh; overflow-y: auto; }
+}
+
 html, body {
   background: #04030a;
   color: #d4c49a;
