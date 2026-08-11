@@ -12,7 +12,7 @@ const S = {
 
 export default function Terms() {
   return (
-    <main className="min-h-screen bg-black font-mono" style={{ padding: "48px 24px" }}>
+    <main className="bg-black font-mono" style={{ padding: "48px 24px", height: "100dvh", overflowY: "auto" }}>
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
         <Link href="/" style={{ fontSize: 9, letterSpacing: "0.25em", color: "rgba(255,255,255,0.4)" }}>
           ← VERUM FRONTIER

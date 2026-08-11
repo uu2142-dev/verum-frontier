@@ -9,6 +9,9 @@ const C = {
   red: "#e74c3c",
   amber: "#c8941a",
   blue: "#58a6ff",
+  model: "#e8d9a8",
+  violet: "#b98cff",
+  teal: "#57c6b0",
   dim: "rgba(255,255,255,0.45)",
   dimmer: "rgba(255,255,255,0.3)",
 };
@@ -58,7 +61,7 @@ export default function VerifyPage() {
   }, [run]);
 
   return (
-    <main className="min-h-screen bg-black font-mono" style={{ padding: "48px 24px" }}>
+    <main className="bg-black font-mono" style={{ padding: "48px 24px", height: "100dvh", overflowY: "auto" }}>
       <div style={{ maxWidth: 860, margin: "0 auto" }}>
         <Link href="/" style={{ fontSize: 10, letterSpacing: "0.25em", color: C.dim }}>← VERUM FRONTIER</Link>
 
@@ -79,6 +82,12 @@ export default function VerifyPage() {
           What a green result proves: the record is the one this gate sealed, at the time it claims, and the
           readable text beside it is the text that was sealed. What it does <strong>not</strong> prove: that any
           model was correct. That distinction is the point — verify the artifact, don&apos;t trust the vendor.
+        </p>
+        <p style={{ color: "rgba(255,255,255,0.72)", fontSize: 13, lineHeight: 1.8, marginBottom: 22 }}>
+          Every exchange also carries its <strong>attribution</strong> — the division of labor behind the answer:
+          what you wrote, what the model produced, what the gate substituted, what was retrieved or recalled, each
+          tied to the part of the record that seals it. A signature proves a record wasn&apos;t altered;
+          attribution shows <em>who authored which part</em>. Different questions — both answered here.
         </p>
 
         {/* drop zone */}
@@ -173,8 +182,42 @@ function Results({ result, fileName }: { result: SessionResult; fileName: string
   );
 }
 
+function Attribution({ ex }: { ex: ExchangeResult }) {
+  const has = (lbl: string) => ex.leaves.some(l => l.label === lbl);
+  const rows: { who: string; color: string; what: string }[] = [
+    { who: "YOU", color: C.blue, what: "the question you asked" },
+  ];
+  if (has("DOCUMENT")) rows.push({ who: "YOU", color: C.blue, what: "a document you attached" });
+  if (ex.declined) {
+    rows.push({ who: "THE MODEL", color: C.dim, what: `${ex.model} — declined this request` });
+    rows.push({ who: "THE GATE", color: C.amber, what: "wrote the note in the answer slot — not the model. The record is flagged so it can never be replayed as the model's words." });
+  } else {
+    rows.push({ who: "THE MODEL", color: C.model, what: `${ex.model} — the answer` });
+  }
+  if (has("SOURCES")) rows.push({ who: "RETRIEVAL", color: C.violet, what: "web sources the answer was grounded on" });
+  if (has("MEMORY")) rows.push({ who: "RECALL", color: C.teal, what: "prior sealed memories the gate surfaced" });
+  const sys = ["RECEIPT", "TIMING", "BIAS"].filter(has).map(s => s.toLowerCase());
+  if (sys.length) rows.push({ who: "THE SYSTEM", color: C.dim, what: `${sys.join(" · ")} — measured by the harness, not authored` });
+  return (
+    <div style={{ border: `1px solid ${C.blue}22`, background: "rgba(88,166,255,0.03)", padding: "9px 11px", marginBottom: 12 }}>
+      <div style={{ fontSize: 9, letterSpacing: "0.18em", color: C.dim, marginBottom: 7 }}>
+        WHO AUTHORED WHAT — THE DIVISION OF LABOR
+      </div>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: "flex", gap: 9, marginBottom: 4, alignItems: "baseline" }}>
+          <span style={{ color: r.color, fontSize: 10, letterSpacing: "0.07em", minWidth: 84, flexShrink: 0 }}>{r.who}</span>
+          <span style={{ color: "rgba(255,255,255,0.66)", fontSize: 10, lineHeight: 1.6 }}>{r.what}</span>
+        </div>
+      ))}
+      <div style={{ color: C.dimmer, fontSize: 9, marginTop: 7, lineHeight: 1.6 }}>
+        Attribution is component-level — which part each party produced, not who wrote which word. A signature proves the record wasn&apos;t altered; this shows who authored each part.
+      </div>
+    </div>
+  );
+}
+
 function ExchangeCard({ ex }: { ex: ExchangeResult }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const bad = !ex.rootOk || !ex.chainOk || ex.sigStatus === "invalid" || ex.leaves.some(l => l.status === "mismatch");
   const edge = bad ? C.red : C.green;
   return (
@@ -199,6 +242,8 @@ function ExchangeCard({ ex }: { ex: ExchangeResult }) {
       </button>
       {open && (
         <div style={{ padding: "2px 11px 11px", fontSize: 10, lineHeight: 1.9 }}>
+          <Attribution ex={ex} />
+          <div style={{ fontSize: 9, letterSpacing: "0.18em", color: C.dim, marginBottom: 6 }}>PROOF — EACH PART IS INTACT</div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 420 }}>
               <thead>
