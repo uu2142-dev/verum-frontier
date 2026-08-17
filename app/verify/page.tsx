@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import Link from "next/link";
 import { verifySession, type SessionResult, type ExchangeResult } from "@/lib/sealVerify";
+import { segmentResponse, hasProcessNarration } from "@/lib/processNarration";
 
 const C = {
   green: "#2ecc71",
@@ -26,14 +27,22 @@ export default function VerifyPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [responses, setResponses] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const run = useCallback(async (text: string, name: string) => {
-    setBusy(true); setError(null); setResult(null); setFileName(name);
+    setBusy(true); setError(null); setResult(null); setResponses([]); setFileName(name);
     try {
       const doc = JSON.parse(text);
       const r = await verifySession(doc);
       setResult(r);
+      // Display-only: keep the readable response text (already in the file) so the
+      // page can show it with tool-loop working-notes dimmed. Never touches the seal.
+      setResponses(
+        Array.isArray(doc?.exchanges)
+          ? doc.exchanges.map((e: { response?: unknown }) => (typeof e?.response === "string" ? e.response : ""))
+          : []
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not read that file as a sealed session.");
     } finally {
@@ -135,7 +144,7 @@ export default function VerifyPage() {
               ⚠ {error}
             </div>
           )}
-          {result && <Results result={result} fileName={fileName} />}
+          {result && <Results result={result} fileName={fileName} responses={responses} />}
         </div>
 
         <CanonRules />
@@ -169,7 +178,7 @@ function Verdict({ result }: { result: SessionResult }) {
   );
 }
 
-function Results({ result, fileName }: { result: SessionResult; fileName: string | null }) {
+function Results({ result, fileName, responses }: { result: SessionResult; fileName: string | null; responses: string[] }) {
   return (
     <div style={{ marginTop: 4 }}>
       {fileName && <div style={{ fontSize: 10, color: C.dimmer, marginBottom: 8 }}>FILE: {fileName}</div>}
@@ -177,12 +186,12 @@ function Results({ result, fileName }: { result: SessionResult; fileName: string
       <div style={{ fontSize: 11, color: C.dim, marginBottom: 8 }}>
         SESSION CHAIN ROOT: <span style={{ color: result.chainRootOk ? C.green : C.red }}>{result.chainRootOk ? "links end-to-end ✓" : "BROKEN ✗"}</span>
       </div>
-      {result.exchanges.map(ex => <ExchangeCard key={ex.index} ex={ex} />)}
+      {result.exchanges.map(ex => <ExchangeCard key={ex.index} ex={ex} response={responses[ex.index] ?? ""} />)}
     </div>
   );
 }
 
-function Attribution({ ex }: { ex: ExchangeResult }) {
+function Attribution({ ex, hasNarration }: { ex: ExchangeResult; hasNarration: boolean }) {
   const has = (lbl: string) => ex.leaves.some(l => l.label === lbl);
   const rows: { who: string; color: string; what: string }[] = [
     { who: "YOU", color: C.blue, what: "the question you asked" },
@@ -193,6 +202,9 @@ function Attribution({ ex }: { ex: ExchangeResult }) {
     rows.push({ who: "THE GATE", color: C.amber, what: "wrote the note in the answer slot — not the model. The record is flagged so it can never be replayed as the model's words." });
   } else {
     rows.push({ who: "THE MODEL", color: C.model, what: `${ex.model} — the answer` });
+    if (hasNarration) {
+      rows.push({ who: "THE MODEL", color: C.dim, what: `${ex.model} — plus its tool-loop working notes (searching, retrying, parsing): the model's own between-search narration, sealed in the same RESPONSE and not separated from the answer` });
+    }
   }
   if (has("SOURCES")) rows.push({ who: "RETRIEVAL", color: C.violet, what: "web sources the answer was grounded on" });
   if (has("MEMORY")) rows.push({ who: "RECALL", color: C.teal, what: "prior sealed memories the gate surfaced" });
@@ -216,8 +228,9 @@ function Attribution({ ex }: { ex: ExchangeResult }) {
   );
 }
 
-function ExchangeCard({ ex }: { ex: ExchangeResult }) {
+function ExchangeCard({ ex, response }: { ex: ExchangeResult; response: string }) {
   const [open, setOpen] = useState(true);
+  const hasNarration = !ex.declined && hasProcessNarration(response);
   const bad = !ex.rootOk || !ex.chainOk || ex.sigStatus === "invalid" || ex.leaves.some(l => l.status === "mismatch");
   const edge = bad ? C.red : C.green;
   return (
@@ -242,7 +255,8 @@ function ExchangeCard({ ex }: { ex: ExchangeResult }) {
       </button>
       {open && (
         <div style={{ padding: "2px 11px 11px", fontSize: 10, lineHeight: 1.9 }}>
-          <Attribution ex={ex} />
+          <Attribution ex={ex} hasNarration={hasNarration} />
+          {hasNarration && <ResponseViewer response={response} />}
           <div style={{ fontSize: 9, letterSpacing: "0.18em", color: C.dim, marginBottom: 6 }}>PROOF — EACH PART IS INTACT</div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 420 }}>
@@ -295,6 +309,43 @@ function ExchangeCard({ ex }: { ex: ExchangeResult }) {
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// Display-only reading aid: shows the full sealed response verbatim with the
+// model's tool-loop working-notes de-emphasized. Seals nothing, removes nothing.
+function ResponseViewer({ response }: { response: string }) {
+  const [open, setOpen] = useState(false);
+  const segments = open ? segmentResponse(response) : [];
+  return (
+    <div style={{ border: `1px solid ${C.amber}22`, background: "rgba(200,148,26,0.03)", padding: "9px 11px", marginBottom: 12 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "monospace",
+          fontSize: 9, letterSpacing: "0.16em", color: C.amber }}
+      >
+        {open ? "▲" : "▼"} SEALED RESPONSE — WORKING NOTES DIMMED (READING AID)
+      </button>
+      {open && (
+        <>
+          <p style={{ fontSize: 9.5, color: C.dimmer, lineHeight: 1.7, margin: "8px 0 10px" }}>
+            The full text below is exactly what this exchange&apos;s RESPONSE leaf seals — the hash you verified
+            above covers every character of it. The dimmed spans are what looks like the model&apos;s own
+            between-search working notes (searching, retrying, parsing), shown here only as a reading aid.
+            Nothing is removed, relabeled in the record, or re-sealed; this is a display heuristic, and it errs
+            toward leaving text bright rather than dimming the answer.
+          </p>
+          <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 11, lineHeight: 1.7, color: "rgba(255,255,255,0.82)" }}>
+            {segments.map((s, i) =>
+              s.note
+                ? <span key={i} style={{ color: C.dimmer, fontStyle: "italic", opacity: 0.75 }} title="looks like the model's tool-loop working notes — model-authored, sealed, not the answer">{s.text}</span>
+                : <span key={i}>{s.text}</span>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
