@@ -1,14 +1,12 @@
 // Single source of truth for contact + booking targets.
 //
-// audit@rabbitholeai.ai is live (Namecheap, delivery to Gmail verified
-// 2026-08-31). Remaining TODO (Jerry): create the 90-min Cal.com event and
-// set BOOKING_CALENDAR_URL — until then the booking CTA falls back to a
-// scoping email.
+// audit@rabbitholeai.ai is live (Namecheap Private Email, verified 2026-08-31).
+// Booking runs through the Cal.com event (90 min, Google Meet).
 
 export const CONTACT_EMAIL = "audit@rabbitholeai.ai";
 
 /** Calendar link for the paid 90-minute review. Empty string = fall back to email. */
-export const BOOKING_CALENDAR_URL = "";
+export const BOOKING_CALENDAR_URL = "https://cal.com/rabbitholeai/reconstructability-review";
 
 export const SCOPING_MAILTO = `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent(
   "Reconstructability review — booking"
