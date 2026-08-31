@@ -87,7 +87,7 @@ export default function Privacy() {
         <h2 style={S.h2}>Contact</h2>
         <p style={S.p}>
           Rabbit Hole AI — Jeremiah Dawson ·{" "}
-          <a href="mailto:jtdawson015@gmail.com" style={{ color: "#c8941a" }}>jtdawson015@gmail.com</a>.
+          <a href="mailto:audit@rabbitholeai.ai" style={{ color: "#c8941a" }}>audit@rabbitholeai.ai</a>.
           See also the <Link href="/terms" style={{ color: "#c8941a" }}>Terms of Use</Link>.
         </p>
       </div>

@@ -59,7 +59,7 @@ export default function Terms() {
         <h2 style={S.h2}>Refunds</h2>
         <p style={S.p}>
           Your unused credit balance is refundable on request, no questions asked.
-          Email <a href="mailto:jtdawson015@gmail.com" style={{ color: "#c8941a" }}>jtdawson015@gmail.com</a> with
+          Email <a href="mailto:audit@rabbitholeai.ai" style={{ color: "#c8941a" }}>audit@rabbitholeai.ai</a> with
           your Stripe receipt and we&apos;ll process it promptly.
         </p>
 
@@ -92,7 +92,7 @@ export default function Terms() {
         <h2 style={S.h2}>Contact</h2>
         <p style={S.p}>
           Rabbit Hole AI — Jeremiah Dawson ·{" "}
-          <a href="mailto:jtdawson015@gmail.com" style={{ color: "#c8941a" }}>jtdawson015@gmail.com</a>.
+          <a href="mailto:audit@rabbitholeai.ai" style={{ color: "#c8941a" }}>audit@rabbitholeai.ai</a>.
           See also the <Link href="/privacy" style={{ color: "#c8941a" }}>Privacy Note</Link>.
         </p>
       </div>
