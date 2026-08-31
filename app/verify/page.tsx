@@ -72,7 +72,7 @@ export default function VerifyPage() {
   return (
     <main className="bg-black font-mono" style={{ padding: "48px 24px", height: "100dvh", overflowY: "auto" }}>
       <div style={{ maxWidth: 860, margin: "0 auto" }}>
-        <Link href="/" style={{ fontSize: 10, letterSpacing: "0.25em", color: C.dim }}>← VERUM FRONTIER</Link>
+        <Link href="/" style={{ fontSize: 10, letterSpacing: "0.25em", color: C.dim }}>← RABBIT HOLE AI</Link>
 
         <h1 style={{ color: "#fff", fontSize: 18, letterSpacing: "0.18em", margin: "18px 0 4px", textTransform: "uppercase" }}>
           Verify a sealed session

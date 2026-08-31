@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "Not found — Verum Frontier",
+  title: "Not found — Rabbit Hole AI",
 };
 
 // An unknown route used to fall through to Next's default black-on-white 404,
@@ -21,7 +21,7 @@ export default function NotFound() {
     <main className="bg-black font-mono" style={{ padding: "48px 24px", height: "100dvh", overflowY: "auto" }}>
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
         <Link href="/" style={{ fontSize: 10, letterSpacing: "0.25em", color: "rgba(255,255,255,0.45)" }}>
-          ← VERUM FRONTIER
+          ← RABBIT HOLE AI
         </Link>
 
         <h1 style={{ color: "#fff", fontSize: 18, letterSpacing: "0.2em", margin: "18px 0 4px", textTransform: "uppercase" }}>
@@ -41,7 +41,8 @@ export default function NotFound() {
         </p>
 
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginTop: 24 }}>
-          <Link href="/" style={link}>THE GATE</Link>
+          <Link href="/" style={link}>THE REVIEW</Link>
+          <Link href="/gate" style={link}>THE GATE</Link>
           <Link href="/verify" style={link}>VERIFY A SESSION</Link>
           <Link href="/terms" style={link}>TERMS</Link>
           <Link href="/privacy" style={link}>PRIVACY</Link>

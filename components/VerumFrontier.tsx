@@ -378,8 +378,13 @@ export default function VerumFrontier() {
           <div className={`w-2 h-2 rounded-full flex-shrink-0 ${running ? "bg-amber-500 animate-pulse" : "bg-green-500"}`}
                style={{ boxShadow: running ? "0 0 8px #f59e0b" : "0 0 8px #22c55e" }} />
           <h1 className="text-[9px] md:text-[10px] tracking-[0.3em] md:tracking-[0.4em] uppercase font-bold text-white whitespace-nowrap">
-            Verum Frontier // A.L.I.C.E. v1.2
+            <a href="/" className="hover:text-amber-400" title="Back to Rabbit Hole AI">Rabbit Hole AI</a> // Live Gate
           </h1>
+          {/* Verum Frontier / A.L.I.C.E. stay here — the lab's internal name,
+              one click off the sales page until they've earned recognition. */}
+          <span className="hidden md:inline text-[8px] tracking-[0.25em] uppercase text-zinc-600 whitespace-nowrap">
+            Verum Frontier · A.L.I.C.E. v1.2
+          </span>
         </div>
 
         {/* Mode toggle — a real tablist, so the four views are navigable and
@@ -639,7 +644,7 @@ export default function VerumFrontier() {
             : "INTENT → RECALL → LLM → GROUNDING → COST AUDIT → BIAS SCREEN → MERKLE SEAL"}
         </span>
         <span className="text-[10px] text-zinc-400 tracking-[0.08em]">
-          <a href="/audit" className="hover:text-white underline">AUDIT</a>
+          <a href="/" className="hover:text-white underline">REVIEW</a>
           {" · "}
           <a href="/verify" className="hover:text-white underline">VERIFY</a>
           {" · "}

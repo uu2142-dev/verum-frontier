@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "Privacy Note — Verum Frontier",
+  title: "Privacy Note — Rabbit Hole AI",
 };
 
 const S = {
@@ -15,7 +15,7 @@ export default function Privacy() {
     <main className="bg-black font-mono" style={{ padding: "48px 24px", height: "100dvh", overflowY: "auto" }}>
       <div style={{ maxWidth: 720, margin: "0 auto" }}>
         <Link href="/" style={{ fontSize: 9, letterSpacing: "0.25em", color: "rgba(255,255,255,0.4)" }}>
-          ← VERUM FRONTIER
+          ← RABBIT HOLE AI
         </Link>
         <h1 style={{ color: "#fff", fontSize: 18, letterSpacing: "0.2em", margin: "18px 0 4px", textTransform: "uppercase" }}>
           Privacy Note
