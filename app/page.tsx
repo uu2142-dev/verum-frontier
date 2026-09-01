@@ -146,7 +146,8 @@ export default function Home() {
           <p style={{ ...S.p, fontSize: 12, color: C.dimmer, marginTop: 12 }}>
             The findings memo you receive follows the same discipline —{" "}
             <Link href="/sample-report" style={{ color: C.blue, textDecoration: "underline" }}>read a full sample report</Link>{" "}
-            built from this synthetic incident.
+            built from this synthetic incident, or{" "}
+            <a href="/sample-report.pdf" download="RHAI-sample-findings-memo.pdf" style={{ color: C.blue, textDecoration: "underline" }}>download it as a PDF</a>.
           </p>
         </section>
 

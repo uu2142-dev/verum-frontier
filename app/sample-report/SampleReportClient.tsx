@@ -59,10 +59,15 @@ export default function SampleReportClient() {
         <nav className="no-print" style={{ display: "flex", gap: 14, alignItems: "center", padding: "18px 0", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
           <Link href="/" style={{ fontSize: 10, letterSpacing: "0.2em", color: C.dimmer, textDecoration: "none" }}>← RABBIT HOLE AI</Link>
           <span style={{ flex: 1 }} />
+          <a
+            href="/sample-report.pdf"
+            download="RHAI-sample-findings-memo.pdf"
+            style={{ fontFamily: "monospace", fontSize: 10, letterSpacing: "0.1em", padding: "7px 14px", border: `1px solid ${C.amber}`, background: "rgba(200,148,26,0.12)", color: C.amber, textDecoration: "none" }}
+          >DOWNLOAD PDF</a>
           <button
             onClick={() => window.print()}
-            style={{ fontFamily: "monospace", fontSize: 10, letterSpacing: "0.1em", cursor: "pointer", padding: "7px 14px", border: `1px solid ${C.amber}`, background: "rgba(200,148,26,0.12)", color: C.amber }}
-          >PRINT / SAVE AS PDF</button>
+            style={{ fontFamily: "monospace", fontSize: 10, letterSpacing: "0.1em", cursor: "pointer", padding: "7px 14px", border: "1px solid rgba(255,255,255,0.25)", background: "transparent", color: C.dim }}
+          >PRINT</button>
         </nav>
 
         {/* ── Synthetic banner ── */}
