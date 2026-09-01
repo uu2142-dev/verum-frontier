@@ -40,11 +40,14 @@ const EIGHT: { q: string; verdict: Verdict; note: string }[] = [
 
 export default function SampleReportClient() {
   return (
-    <main className="report-root bg-black font-mono" style={{ padding: "0 24px 48px", minHeight: "100dvh" }}>
+    // body is overflow:hidden app-wide (globals.css), so the page must own its
+    // scroll; print must undo that or the PDF clips to one viewport-height.
+    <main className="report-root bg-black font-mono" style={{ padding: "0 24px 48px", height: "100dvh", overflowY: "auto" }}>
       <style>{`
         .report-root { color: rgba(255,255,255,0.7); }
         @media print {
-          .report-root { background: #fff !important; color: #1a1a1a !important; padding: 0 !important; }
+          html, body { overflow: visible !important; height: auto !important; }
+          .report-root { background: #fff !important; color: #1a1a1a !important; padding: 0 !important; height: auto !important; overflow: visible !important; }
           .report-root * { color: #1a1a1a !important; border-color: #999 !important; background: transparent !important; }
           .report-root .print-accent { color: #7a5a10 !important; }
           .report-root .no-print { display: none !important; }
