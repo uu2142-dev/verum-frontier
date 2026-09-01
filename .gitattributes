@@ -1,0 +1,7 @@
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+# sealed sessions must clone byte-identical or content-leaf hashes fail
+public/sample-sealed-session.json -text
