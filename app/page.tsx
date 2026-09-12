@@ -23,6 +23,7 @@ const NAV = [
   { href: "/sample-report", label: "Sample report" },
   { href: "/gate", label: "Live lab" },
   { href: "/verify", label: "Verify a file" },
+  { href: "/wow", label: "WoW gear (test)" },
   { href: GITHUB_URL, label: "GitHub", external: true },
 ];
 
