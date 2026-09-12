@@ -23,6 +23,34 @@ export default function WowGearDemo() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const [fb, setFb] = useState("");
+  const [fbHandle, setFbHandle] = useState("");
+  const [fbMsg, setFbMsg] = useState<string | null>(null);
+  const [fbBusy, setFbBusy] = useState(false);
+
+  async function sendFeedback() {
+    setFbBusy(true);
+    setFbMsg(null);
+    try {
+      const res = await fetch("/api/wow/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: fb, handle: fbHandle }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setFbMsg(data.error || `Couldn't send (${res.status}).`);
+      } else {
+        setFbMsg(data.message || "Thanks — logged.");
+        setFb("");
+      }
+    } catch {
+      setFbMsg("Network error — try again.");
+    } finally {
+      setFbBusy(false);
+    }
+  }
+
   async function run() {
     setBusy(true);
     setErr(null);
@@ -111,6 +139,52 @@ export default function WowGearDemo() {
           {text}
         </pre>
       )}
+
+      <section style={{ marginTop: 40, borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 24 }}>
+        <div style={{ fontSize: 9, letterSpacing: "0.18em", color: C.amber, marginBottom: 8 }}>SUGGESTIONS</div>
+        <h2 style={{ fontSize: 18, margin: "0 0 8px", color: "#fff" }}>Tell us what to build or fix</h2>
+        <p style={{ color: C.dimmer, fontSize: 12, lineHeight: 1.8, marginBottom: 14 }}>
+          What&apos;s missing, wrong, or confusing? Every suggestion is screened (toxicity + prompt-injection),
+          sealed to a tamper-evident log, and reviewed by ALICE and the council in batches. Optional handle
+          so we can credit or follow up.
+        </p>
+        <textarea
+          value={fb}
+          onChange={(e) => setFb(e.target.value)}
+          placeholder="e.g. add a dark-mode toggle; the Frost flask looks wrong; show me the route map…"
+          maxLength={4000}
+          style={{
+            width: "100%", minHeight: 90, resize: "vertical", boxSizing: "border-box",
+            background: "rgba(255,255,255,0.04)", color: C.dim, border: "1px solid rgba(255,255,255,0.15)",
+            borderRadius: 8, padding: 12, fontFamily: "ui-sans-serif, system-ui, sans-serif", fontSize: 13,
+          }}
+        />
+        <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+          <input
+            value={fbHandle}
+            onChange={(e) => setFbHandle(e.target.value)}
+            placeholder="handle (optional)"
+            maxLength={40}
+            style={{
+              background: "rgba(255,255,255,0.04)", color: C.dim, border: "1px solid rgba(255,255,255,0.15)",
+              borderRadius: 6, padding: "8px 10px", fontSize: 12, width: 180,
+            }}
+          />
+          <button
+            onClick={sendFeedback}
+            disabled={fbBusy || fb.trim().length < 6}
+            style={{
+              padding: "9px 18px", border: `1px solid ${C.amber}`, borderRadius: 6,
+              background: fbBusy || fb.trim().length < 6 ? "rgba(200,148,26,0.06)" : "rgba(200,148,26,0.16)",
+              color: C.amber, fontSize: 13, cursor: fbBusy || fb.trim().length < 6 ? "default" : "pointer",
+              opacity: fbBusy || fb.trim().length < 6 ? 0.6 : 1,
+            }}
+          >
+            {fbBusy ? "Sending…" : "Send suggestion"}
+          </button>
+          {fbMsg && <span style={{ fontSize: 12, color: C.green }}>{fbMsg}</span>}
+        </div>
+      </section>
 
       <p style={{ color: C.dimmer, fontSize: 11, lineHeight: 1.7, marginTop: 24 }}>
         Your export string is read to produce this plan and is not stored by this page. The WoW Game Pack is a
