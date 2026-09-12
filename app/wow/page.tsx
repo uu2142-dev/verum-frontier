@@ -49,7 +49,9 @@ export default function WowGearDemo() {
   }
 
   return (
-    <main style={{ maxWidth: 860, margin: "0 auto", padding: "40px 20px", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+    // body is overflow:hidden app-wide (globals.css), so this page must own its scroll
+    <main style={{ height: "100dvh", overflowY: "auto", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+     <div style={{ maxWidth: 860, margin: "0 auto", padding: "40px 20px" }}>
       <nav style={{ marginBottom: 22 }}>
         <Link href="/" style={{ fontSize: 11, color: C.dimmer, textDecoration: "none", letterSpacing: "0.04em" }}>← rabbitholeai.ai</Link>
       </nav>
@@ -114,6 +116,7 @@ export default function WowGearDemo() {
         Your export string is read to produce this plan and is not stored by this page. The WoW Game Pack is a
         third-party companion; it never automates play and does nothing while you are in combat.
       </p>
+      </div>
     </main>
   );
 }
