@@ -80,8 +80,9 @@ export default function WowGearDemo() {
     // body is overflow:hidden app-wide (globals.css), so this page must own its scroll
     <main style={{ height: "100dvh", overflowY: "auto", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
      <div style={{ maxWidth: 860, margin: "0 auto", padding: "40px 20px" }}>
-      <nav style={{ marginBottom: 22 }}>
+      <nav style={{ marginBottom: 22, display: "flex", gap: 16 }}>
         <Link href="/" style={{ fontSize: 11, color: C.dimmer, textDecoration: "none", letterSpacing: "0.04em" }}>← rabbitholeai.ai</Link>
+        <Link href="/wow/aar" style={{ fontSize: 11, color: C.dimmer, textDecoration: "none", letterSpacing: "0.04em" }}>After Action Report →</Link>
       </nav>
 
       <div style={{ fontSize: 9, letterSpacing: "0.18em", color: C.amber, marginBottom: 8 }}>ALICE VERUM · WOW GAME PACK · TEST</div>
