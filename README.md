@@ -4,10 +4,13 @@
 Live at: **rabbitholeai.ai**
 
 Two modes:
-- **LIVE GATE (default)** — real multi-model chat. Four model families (Meta,
-  OpenAI open-weights, Alibaba, Google) answer through the gate. Every response
-  returns real token counts, a cost-plus receipt, and a SHA-256 Merkle seal
-  that anyone can re-verify. Free tier: 5 queries/day, 1,024-token answers.
+- **LIVE GATE (default)** — real multi-model chat. The free council is three
+  model families (OpenAI open weights: GPT-OSS 120B + 20B; Alibaba: Qwen 3.8 27B;
+  Google: Gemini 2.5 Flash); a credits-only premium council sits beside it. Every
+  response returns real token counts, a cost-plus receipt, and a SHA-256 Merkle
+  seal that anyone can re-verify. Free tier: 5 queries/day, 1,024-token answers.
+  (Meta's Llama 3.3 70B was retired 2026-09-25 when Groq withdrew it; sessions
+  sealed with it still verify.)
 - **SIM DEMO** — the original cinematic pipeline concept demo, clearly labeled
   as simulated.
 
@@ -23,7 +26,7 @@ same three in **Vercel → Project → Settings → Environment Variables**:
 
 | Variable | Source |
 |---|---|
-| `GROQ_API_KEY` | console.groq.com (serves Llama 3.3 70B, GPT-OSS 120B, Qwen 3.6 27B) |
+| `GROQ_API_KEY` | console.groq.com (serves GPT-OSS 120B, GPT-OSS 20B, Qwen 3.8 27B) |
 | `GEMINI_API_KEY` | aistudio.google.com (serves Gemini 2.5 Flash) |
 | `QUOTA_SECRET` | any long random string — signs the free-tier quota cookie |
 | `BIAS_ENDPOINT` | `https://rhai-financial.duckdns.org/bias` — validated BiasChecker v1 on RHAI infra |
@@ -33,6 +36,9 @@ same three in **Vercel → Project → Settings → Environment Variables**:
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | dashboard.stripe.com — `pk_test_…` counterpart |
 | `CREDITS_ENDPOINT` | `https://rhai-financial.duckdns.org/credits` — RHAI Credits Ledger on .16 |
 | `CREDITS_TOKEN` | on the droplet in `/opt/alice/app/.credits_env` — bearer token for wallet ops |
+| `VERUM_DISABLED_MODELS` | optional kill-switch — comma-separated gate model ids (e.g. `qwen3.8-27b`) hidden from the boot list and refused with 503. Can only remove models; adding or swapping one is a code change (re-pin its rate in `lib/pricing.ts`) |
+| `MODEL_HEALTH_TOKEN` | optional, ≥ 16 chars — enables operator-only `GET /api/chat?health=1` (`Authorization: Bearer …`), which pings each free-council model and logs `WARNING model_unavailable` on failure. Unset → that route answers 404 |
+| `CRON_SECRET` | optional — lets a Vercel Cron job call the same health route (Vercel sends it as the bearer token) |
 
 **Prepaid credits (cost-plus made concrete):** Buy $5/$10/$25 via Stripe
 Checkout → the returned session id funds a wallet on the RHAI ledger

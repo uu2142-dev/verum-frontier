@@ -19,7 +19,25 @@ interface ModelInfo {
   tier?: string; // "free" | "premium" — premium is credits-only, enforced server-side
   selfGrounds?: boolean; // has native web search — GROUND IT adds to it, never overrides it
 }
+// A model the gate once served and has retired (boot list `retiredModels`):
+// display metadata only, so a restored exchange still shows who answered it.
+interface RetiredInfo { id: string; name: string; family: string; color: string; retiredOn: string; }
 interface Quota { used: number; limit: number; resetsAtUtc: string; }
+
+// Per-million rates as the provider publishes them. toFixed(2) printed GPT-OSS
+// 20B's $0.075 as "$0.07" (and a $0.075 Gemini cache rate the same way) — a
+// displayed price that disagreed with the receipt math. Two decimals when that
+// is exact, three otherwise. Display only; billing reads the unrounded rate.
+function fmtRate(v: number): string {
+  return Math.abs(v * 100 - Math.round(v * 100)) < 1e-9 ? v.toFixed(2) : v.toFixed(3);
+}
+
+// "Three model families — A, B, C" — derived from the live boot list, so the
+// claim stays true when a model is added, retired, or switched off.
+const COUNT_WORDS = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
+function countWord(n: number): string {
+  return COUNT_WORDS[n] ?? String(n);
+}
 interface Stage { label: string; detail: string; ms: number; }
 interface Leaf { label: string; sha256: string; }
 interface Receipt {
@@ -93,15 +111,18 @@ function routeQuery(q: string, mode: "save" | "best", models: ModelInfo[]): { mo
     return pick("gpt-oss-120b", "code/technical → strongest reasoning per dollar");
   }
   if (/\b(translate|translation|spanish|french|german|chinese|japanese|korean|arabic)\b/.test(ql)) {
-    return pick("qwen3.6-27b", "multilingual → Qwen");
+    return pick("qwen3.8-27b", "multilingual → Qwen");
   }
   if (q.length > 1500 || /\b(summarize|summarise|analyze this|this document|attached)\b/.test(ql)) {
     return pick("gemini-2.5-flash", "long-context task → Gemini");
   }
+  // Llama 3.3 70B held the writing + default seats until Groq retired it
+  // (2026-09-25); GPT-OSS 120B inherits both (Groq production tier, and the
+  // first model in the boot list — the gate's default pick).
   if (/\b(write|story|poem|creative|draft|essay|letter|rewrite)\b/.test(ql)) {
-    return pick("llama-3.3-70b", "writing → Llama 70B");
+    return pick("gpt-oss-120b", "writing → GPT-OSS 120B");
   }
-  return pick("llama-3.3-70b", "general question → Llama 70B default");
+  return pick("gpt-oss-120b", "general question → GPT-OSS 120B default");
 }
 
 // Conversation archive: the session lives in YOUR browser (localStorage), not
@@ -556,13 +577,16 @@ function ReceiptCard({ r, color }: { r: Receipt; color: string }) {
       <Row k="DIRECT API COST" v={fmtUsd(r.directUsd)} strong color={color} />
       {r.cachedInputTokens && r.cachedInputTokens > 0 ? (
         <>
-          <Sub k={`${(r.uncachedInputTokens ?? r.usage.inputTokens).toLocaleString()} in (fresh) × $${r.rates.inPerM.toFixed(2)}/M`} />
-          <Sub k={`${r.cachedInputTokens.toLocaleString()} in (cached) × $${(r.cacheRatePerM ?? r.rates.inPerM).toFixed(2)}/M — provider cache discount`} />
+          <Sub k={`${(r.uncachedInputTokens ?? r.usage.inputTokens).toLocaleString()} in (fresh) × $${fmtRate(r.rates.inPerM)}/M`} />
+          {/* Groq now reports cache hits for GPT-OSS but the gate bills them at the
+              full input rate — only call it a discount when one was applied. */}
+          <Sub k={`${r.cachedInputTokens.toLocaleString()} in (cached) × $${fmtRate(r.cacheRatePerM ?? r.rates.inPerM)}/M — ${
+            (r.cacheRatePerM ?? r.rates.inPerM) < r.rates.inPerM ? "provider cache discount" : "billed at the full input rate"}`} />
         </>
       ) : (
-        <Sub k={`${r.usage.inputTokens.toLocaleString()} in × $${r.rates.inPerM.toFixed(2)}/M`} />
+        <Sub k={`${r.usage.inputTokens.toLocaleString()} in × $${fmtRate(r.rates.inPerM)}/M`} />
       )}
-      <Sub k={`${r.usage.outputTokens.toLocaleString()} out × $${r.rates.outPerM.toFixed(2)}/M`} />
+      <Sub k={`${r.usage.outputTokens.toLocaleString()} out × $${fmtRate(r.rates.outPerM)}/M`} />
       {!!r.groundingUsd && r.groundingUsd > 0 && (
         <>
           <Row k="RETRIEVAL (web search)" v={fmtUsd(r.groundingUsd)} color="#58a6ff" />
@@ -717,6 +741,7 @@ function SealView({ ex }: { ex: Exchange }) {
 
 export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallbackToDemo?: () => void; onOpenMemories?: () => void }) {
   const [models, setModels]     = useState<ModelInfo[]>([]);
+  const [retiredModels, setRetiredModels] = useState<RetiredInfo[]>([]);
   const [bootFailed, setBootFailed] = useState(false);
   const [modelId, setModelId]   = useState<string>("");
   const [quota, setQuota]       = useState<Quota | null>(null);
@@ -838,6 +863,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
       .then(d => {
         if (!d.models?.length) throw new Error("no models");
         setModels(d.models);
+        if (Array.isArray(d.retiredModels)) setRetiredModels(d.retiredModels);
         // Honour a pick made in the Models tab, if it still exists in the boot list.
         let initial = d.models[0].id;
         try {
@@ -934,6 +960,10 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
   }, []);
 
   const model = models.find(m => m.id === modelId);
+  // Free-council families as the boot list reports them right now (retired or
+  // switched-off models are absent from it), for the "N model families" copy.
+  const freeFamilies = Array.from(new Set(models.filter(m => (m.tier ?? "free") === "free").map(m => m.family)));
+  const hasPremium = models.some(m => m.tier === "premium");
   const remaining = quota ? Math.max(0, quota.limit - quota.used) : null;
   // Credits bypass the free tier entirely — a funded wallet keeps the gate
   // open when the daily free quota is spent. (Free resets 00:00 UTC.)
@@ -1354,8 +1384,17 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
               <div style={{ color: "#c8941a", letterSpacing: "0.25em", fontSize: 9, marginBottom: 10 }}>
                 THE GATE IS LIVE
               </div>
-              Four model families — Meta, OpenAI (open weights), Alibaba, Google — answer
-              through the Verum Frontier gate. Every response returns with a cost-plus
+              {/* Was a hardcoded "Four model families — Meta, …", which went false the
+                  day Groq retired Llama. Now counted from the boot list. */}
+              {freeFamilies.length > 0 ? (
+                <>
+                  {countWord(freeFamilies.length)} model {freeFamilies.length === 1 ? "family" : "families"} — {freeFamilies.join(", ")} — form
+                  the gate&apos;s free council{hasPremium ? "; premium models run on prepaid credits" : ""}.
+                </>
+              ) : (
+                <>Models answer through the Verum Frontier gate.</>
+              )}{" "}
+              Every response returns with a cost-plus
               receipt and a SHA-256 Merkle seal you can download and verify yourself.
               <div style={{ fontSize: 9, color: "rgba(255,255,255,0.25)", marginTop: 12, lineHeight: 1.8 }}>
                 WHAT&apos;S REAL HERE: model responses, token counts, costs, hashes, timings,<br />
@@ -1373,7 +1412,12 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
           )}
 
           {thread.map(ex => {
-            const m = models.find(mm => mm.id === ex.modelId);
+            // A restored exchange may name a model the gate has since retired —
+            // fall back to its display metadata (then to the raw id) so the header
+            // still says who answered instead of rendering blank.
+            const live = models.find(mm => mm.id === ex.modelId);
+            const retiredM = live ? undefined : retiredModels.find(mm => mm.id === ex.modelId);
+            const m = live ?? retiredM;
             const open = expanded === ex.id;
             return (
               <div key={ex.id} style={{ marginBottom: 18, fontFamily: "monospace" }}>
@@ -1392,7 +1436,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
                     border: `1px solid ${m?.color ?? "#888"}44`, background: "rgba(5,4,11,0.94)",
                   }}>
                     <div style={{ fontSize: 7, letterSpacing: "0.2em", color: m?.color, marginBottom: 4 }}>
-                      {m?.name.toUpperCase()} · {m?.family.toUpperCase()} · {ex.timingMs.llm}ms
+                      {(m?.name ?? ex.modelId).toUpperCase()}{m ? ` · ${m.family.toUpperCase()}` : ""}{retiredM ? ` · RETIRED ${retiredM.retiredOn}` : ""} · {ex.timingMs.llm}ms
                       {ex.routing && <span style={{ color: "#58a6ff" }}> · 🐇 ALICE·{ex.routing.mode.toUpperCase()}</span>}
                     </div>
                     {ex.routing && (
@@ -1580,7 +1624,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
                   }}
                 >
                   {sel?.tier === "premium" ? "💳 " : ""}{sel ? sel.name.toUpperCase() : "SELECT MODEL"}
-                  {sel && <span style={{ opacity: 0.55 }}> · ${sel.inPerM.toFixed(2)}/${sel.outPerM.toFixed(2)}</span>}
+                  {sel && <span style={{ opacity: 0.55 }}> · ${fmtRate(sel.inPerM)}/${fmtRate(sel.outPerM)}</span>}
                   {" ▾"}
                 </button>
                 {modelTrayOpen && (
@@ -1631,7 +1675,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
                                     opacity: locked ? 0.6 : 1,
                                   }}>
                                   {premium ? "💳 " : ""}{m.name.toUpperCase()}
-                                  <span style={{ opacity: 0.55 }}> · {m.family} · ${m.inPerM.toFixed(2)}/${m.outPerM.toFixed(2)} per M</span>
+                                  <span style={{ opacity: 0.55 }}> · {m.family} · ${fmtRate(m.inPerM)}/${fmtRate(m.outPerM)} per M</span>
                                   {active && <span style={{ float: "right", color: m.color }}>✓</span>}
                                 </button>
                               );

@@ -17,13 +17,30 @@
 //   4. Root → chain.     Each exchange's chain hash links to the one before it,
 //      so exchanges can't be reordered, dropped, or spliced in.
 
-// id → providerModel. Public data mirrored from the model registry (lib/pricing.ts);
-// the TIMING leaf is hashed over the provider's model name, not our display id.
+// id → providerModel. Public data mirrored from the model registry (lib/pricing.ts,
+// MODEL_REGISTRY + PREMIUM_MODELS + RETIRED_MODELS); the TIMING leaf is hashed over
+// the provider's model name, not our display id.
+//
+// APPEND-ONLY. This map covers every id the gate has EVER sealed, not just the ids
+// it serves today. A model leaving the live registry must never leave this map:
+// a session sealed while it was live would otherwise fail its TIMING leaf here
+// (the lookup falls back to the display id, which is not what was hashed) and a
+// genuine record would read as tampered.
 const PROVIDER_MODEL: Record<string, string> = {
-  "llama-3.3-70b": "llama-3.3-70b-versatile",
+  // Free council, live as of 2026-09-25
   "gpt-oss-120b": "openai/gpt-oss-120b",
-  "qwen3.6-27b": "qwen/qwen3.6-27b",
+  "gpt-oss-20b": "openai/gpt-oss-20b",
+  "qwen3.8-27b": "qwen/qwen3.8-27b",
   "gemini-2.5-flash": "gemini-2.5-flash",
+  // RETIRED — no longer selectable; kept forever so their sealed sessions verify.
+  "llama-3.3-70b": "llama-3.3-70b-versatile", // retired from the gate 2026-09-25
+  "qwen3.6-27b": "qwen/qwen3.6-27b",          // retired from the gate 2026-09-25
+  // The Alibaba seat before Groq decommissioned it on 2026-07-17. Added
+  // defensively 2026-09-25: if any exchange was sealed under this id, its TIMING
+  // leaf was hashed over "qwen/qwen3-32b" and would otherwise false-fail here.
+  // Harmless if no session ever used this id.
+  "qwen3-32b": "qwen/qwen3-32b",
+  // Premium council
   "claude-opus-4.8": "claude-opus-4-8",
   "claude-sonnet-5": "claude-sonnet-5",
   "claude-haiku-4.5": "claude-haiku-4-5",

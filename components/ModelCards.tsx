@@ -24,6 +24,12 @@ function exampleCost(m: ModelInfo): number {
   return direct * 1.20; // +5% infra +15% support
 }
 
+// Per-million rates as published: toFixed(2) showed GPT-OSS 20B's $0.075 as
+// "$0.07". Two decimals when exact, three otherwise (same rule as LiveGate).
+function fmtRate(v: number): string {
+  return Math.abs(v * 100 - Math.round(v * 100)) < 1e-9 ? v.toFixed(2) : v.toFixed(3);
+}
+
 export default function ModelCards({ onPick }: { onPick?: () => void }) {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [picked, setPicked] = useState<string>("");
@@ -68,7 +74,7 @@ export default function ModelCards({ onPick }: { onPick?: () => void }) {
         </div>
 
         <div style={{ fontSize: 8, color: "rgba(255,255,255,0.4)", marginTop: 6, lineHeight: 1.7 }}>
-          ${m.inPerM.toFixed(2)} in / ${m.outPerM.toFixed(2)} out per 1M tokens
+          ${fmtRate(m.inPerM)} in / ${fmtRate(m.outPerM)} out per 1M tokens
         </div>
         <div style={{ fontSize: 8, color: "#c8941a", marginTop: 2 }}>
           ≈ ${exampleCost(m).toFixed(4)} for a typical answer <span style={{ opacity: 0.6 }}>(estimate — the receipt is the truth)</span>

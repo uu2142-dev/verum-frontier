@@ -8,19 +8,45 @@
 //
 // Provider rates (on-demand, per 1M tokens) read directly from PRIMARY sources.
 // The sheet is layered — each block records when it was last verified:
-//   • Free council per-token rates — 2026-07-14, groq.com/pricing +
-//     ai.google.dev/gemini-api/docs/pricing. (07-14 correction: Llama 3.3 70B is
-//     $0.59/$0.79 on Groq's own page — the $0.30/$0.40 pinned 07-12 came from
-//     stale secondary sources and understated receipts.)
-//   • Premium council per-token rates — 2026-07-23 (see PREMIUM_MODELS below).
+//   • Free council per-token rates — 2026-09-25, from Groq's OWN published rate
+//     card. groq.com/pricing now answers 308 → groq.com/ (the homepage, no rate
+//     table), so the primary source is Groq's docs: the model table at
+//     console.groq.com/docs/models plus the per-model pages
+//     console.groq.com/docs/model/<provider>/<model>. Read that day:
+//       openai/gpt-oss-120b  $0.15 in / $0.60 out  — RE-CONFIRMED, unchanged (Production)
+//       openai/gpt-oss-20b   $0.075 in / $0.30 out — NEW budget chip (Production)
+//       qwen/qwen3.8-27b     $0.80 in / $4.00 out  — NEW, replaces qwen/qwen3.6-27b.
+//                            Listed under PREVIEW models ("may be discontinued
+//                            at short notice") — the Alibaba seat is the least
+//                            durable one; watch model health.
+//     Groq's model pages also list a CACHED-input rate for GPT-OSS now ($0.075 for
+//     120B, $0.037 for 20B). cacheMultiplier("groq") below is still 1.0, so any
+//     cache-hit Groq reports is billed at the full input rate (over, never under).
+//     Deliberately NOT changed in the 2026-09-25 model migration — see CHANGES.md.
+//     Gemini 2.5 Flash $0.30 / $2.50 re-confirmed the same day at
+//     ai.google.dev/gemini-api/docs/pricing (paid tier, text/image/video).
+//     Retired from the live registry 2026-09-25 (see RETIRED_MODELS): Llama 3.3 70B
+//     (Groq's model table now lists it Enterprise / "Contact Sales" and the
+//     on-demand API returns 404 model_not_found) and Qwen 3.6 27B (404). Their last
+//     pinned rates are kept in RETIRED_MODELS for the record; every old receipt
+//     already carries the rates it was billed at.
+//     (History: 07-14 correction — Llama 3.3 70B was $0.59/$0.79 on Groq's own page;
+//     the $0.30/$0.40 pinned 07-12 came from stale secondary sources.)
+//   • Premium council per-token rates — 2026-07-23; Claude Sonnet 5 and GPT-5.6 Sol
+//     corrected 2026-09-25 from the providers' own pages (see PREMIUM_MODELS below).
 //   • Per-search retrieval rates — 2026-07-23/24 (searchUnitUsd).
 //   • Cache-read multipliers — 2026-07-24 (cacheMultiplier), reconciled live
 //     against the xAI console.
 // PRICE_SHEET_DATE is the date the sheet last MATERIALLY changed — bump it on any
 // rate/structure change so the date printed on every receipt matches reality.
 // Always re-verify against the provider's own page before re-pinning.
-
-export const PRICE_SHEET_DATE = "2026-07-24";
+//
+// 2026-09-25: free-council migration (Llama 3.3 70B + Qwen 3.6 27B retired,
+// Qwen 3.8 27B + GPT-OSS 20B added, GPT-OSS 120B re-confirmed) and two premium
+// corrections (Sonnet 5 stays $2/$10 — the scheduled step was cancelled; GPT-5.6
+// Sol $4/$20 promotional). Receipts sealed before this date keep the date and
+// rates they were sealed with; nothing sealed is rewritten.
+export const PRICE_SHEET_DATE = "2026-09-25";
 
 // Google Search grounding surcharge — Google bills grounded requests separately
 // from tokens ($35 / 1,000 requests = $0.035/request, pinned from
@@ -117,16 +143,20 @@ export interface ModelSpec {
   tier?: ModelTier;      // undefined = "free"
   // A pre-announced rate change that takes effect ON/AFTER `from` (ISO date, UTC).
   // The gate flips to these rates automatically on that date so it never silently
-  // under- or over-charges against a provider's scheduled price step. Used for
-  // Sonnet 5's intro-pricing expiry — see effectiveRates().
+  // under- or over-charges against a provider's scheduled price step — see
+  // effectiveRates(). No model uses it as of 2026-09-25: its one user, Sonnet 5's
+  // announced $3/$15 step, was cancelled by Anthropic (see PREMIUM_MODELS). Only set
+  // it from a step the provider's OWN page still announces on the day you pin it.
   scheduledRate?: { from: string; inPerM: number; outPerM: number };
 }
 
 // The rates in force for a spec at a given moment. If a scheduledRate has come
-// due, those win — so a provider's announced price step (e.g. Sonnet 5's intro
-// pricing ending 2026-08-31) applies automatically instead of waiting on a manual
-// re-pin. The receipt, the chips, and the estimates all read through this, so
-// billing and display never diverge from what the provider actually charges.
+// due, those win — so a provider's announced price step applies automatically
+// instead of waiting on a manual re-pin. The receipt, the chips, and the estimates
+// all read through this, so billing and display never diverge. The flip side,
+// learned 2026-09-25: an announced step can be CANCELLED, and then this applies a
+// price the provider no longer charges (Sonnet 5 billed $3/$15 from 2026-09-01
+// although Anthropic kept it at $2/$10). Re-verify any scheduled step on its date.
 export function effectiveRates(spec: ModelSpec, now: Date = new Date()): { inPerM: number; outPerM: number } {
   const sched = spec.scheduledRate;
   if (sched && now.getTime() >= Date.parse(sched.from + "T00:00:00Z")) {
@@ -135,18 +165,16 @@ export function effectiveRates(spec: ModelSpec, now: Date = new Date()): { inPer
   return { inPerM: spec.inPerM, outPerM: spec.outPerM };
 }
 
+// The FREE COUNCIL — three model families as of 2026-09-25: OpenAI (open
+// weights), Alibaba, Google. The first entry is the default pick and the ALICE
+// router's fallback, so it must be the most dependable model (production tier).
+// Every rate here is a PINNED, VERIFIED number: a model id is never swapped
+// without re-pinning its rate from the provider's own page, which is why model
+// ids live in code beside their prices instead of in env config. The env
+// kill-switch VERUM_DISABLED_MODELS (see app/api/chat/route.ts) is what makes
+// the next retirement a config change: it can hide a dead model instantly, it
+// can never point a price at a different model.
 export const MODEL_REGISTRY: readonly ModelSpec[] = [
-  {
-    id: "llama-3.3-70b",
-    providerModel: "llama-3.3-70b-versatile",
-    provider: "groq",
-    name: "Llama 3.3 70B",
-    family: "Meta",
-    color: "#c8a96e",
-    inPerM: 0.59,
-    outPerM: 0.79,
-    note: "Open weights · served by Groq LPU",
-  },
   {
     id: "gpt-oss-120b",
     providerModel: "openai/gpt-oss-120b",
@@ -159,17 +187,33 @@ export const MODEL_REGISTRY: readonly ModelSpec[] = [
     note: "OpenAI open-weight model · served by Groq LPU",
   },
   {
-    // qwen3-32b decommissioned by Groq 2026-07-17 (deprecation email 07-14);
-    // swapped to its successor to keep the Alibaba family in the council.
-    id: "qwen3.6-27b",
-    providerModel: "qwen/qwen3.6-27b",
+    // Same family as GPT-OSS 120B (OpenAI open weights) — a cheaper, faster
+    // sibling, NOT an extra family. Added 2026-09-25 at Groq's published rate.
+    id: "gpt-oss-20b",
+    providerModel: "openai/gpt-oss-20b",
     provider: "groq",
-    name: "Qwen 3.6 27B",
+    name: "GPT-OSS 20B",
+    family: "OpenAI (open weights)",
+    color: "#aed581",
+    inPerM: 0.075,
+    outPerM: 0.30,
+    note: "OpenAI open-weight · budget sibling of GPT-OSS 120B (same family) · served by Groq LPU",
+  },
+  {
+    // Lineage of the Alibaba seat: qwen/qwen3-32b (decommissioned by Groq
+    // 2026-07-17) → qwen/qwen3.6-27b (404 model_not_found, found 2026-09-25) →
+    // qwen/qwen3.8-27b. Groq serves 3.8 as a PREVIEW model; if it disappears,
+    // hide it with VERUM_DISABLED_MODELS and the council honestly shrinks to two
+    // families (the gate's copy is derived from the boot list, so it stays true).
+    id: "qwen3.8-27b",
+    providerModel: "qwen/qwen3.8-27b",
+    provider: "groq",
+    name: "Qwen 3.8 27B",
     family: "Alibaba",
     color: "#b39ddb",
-    inPerM: 0.60,
-    outPerM: 3.00,
-    note: "Open weights · served by Groq LPU",
+    inPerM: 0.80,
+    outPerM: 4.00,
+    note: "Open weights · Groq PREVIEW model (may be discontinued at short notice) · served by Groq LPU",
   },
   {
     id: "gemini-2.5-flash",
@@ -196,7 +240,9 @@ export const MODEL_REGISTRY: readonly ModelSpec[] = [
 //   1. A premium model is never advertised unless its provider key is set.
 //   2. tier === "premium" ⇒ credits only. Never billed to the free tier.
 //
-// Re-pin: Sonnet 5 steps $2/$10 → $3/$15 on 2026-09-01.
+// Corrections re-pinned 2026-09-25 from the providers' own pages (details on
+// each entry): Claude Sonnet 5 stays $2/$10 (the scheduled $3/$15 step was
+// cancelled); GPT-5.6 Sol $4/$20 promotional — RE-CHECK ON 2026-11-21.
 // xAI: grok-4.5 is $2/$6 under 200k context, $4/$12 above. Chat prompts here
 // are capped far below 200k, so the under-200k rate is the honest one —
 // revisit if a long-document mode ever lifts that cap.
@@ -223,9 +269,6 @@ export const MODEL_REGISTRY: readonly ModelSpec[] = [
 // yields ~30% more tokens for the same text. The receipt counts REAL returned
 // tokens, so it stays honest automatically — the higher counts are expected,
 // not a bug.
-//
-// Sonnet 5 carries introductory pricing ($2/$10) through 2026-08-31; it steps
-// to $3/$15 on 2026-09-01. Re-verify and re-pin then (bump PRICE_SHEET_DATE).
 export const PREMIUM_MODELS: readonly ModelSpec[] = [
   {
     id: "claude-opus-4.8",
@@ -246,12 +289,17 @@ export const PREMIUM_MODELS: readonly ModelSpec[] = [
     name: "Claude Sonnet 5",
     family: "Anthropic",
     color: "#c98fb1",
-    inPerM: 2,   // introductory thru 2026-08-31
-    outPerM: 10, // introductory thru 2026-08-31
-    // Anthropic's announced step; the gate flips to it automatically on this date
-    // so Sonnet is never silently under-billed after intro pricing ends.
-    scheduledRate: { from: "2026-09-01", inPerM: 3, outPerM: 15 },
-    note: "Balanced flagship · credits only · intro pricing thru Aug 31 2026",
+    // $2/$10 is now the STANDARD price. Source: Anthropic's pricing page
+    // (platform.claude.com/docs/en/about-claude/pricing), footnote read 2026-09-25:
+    //   "The $2/$10 per million input/output token pricing for Claude Sonnet 5,
+    //    announced at launch as introductory pricing through August 31, 2026, is
+    //    now the standard price. The previously scheduled increase to $3/$15 per
+    //    million input/output tokens on September 1, 2026 will not occur."
+    // The scheduledRate step to $3/$15 (from 2026-09-01) was REMOVED 2026-09-25.
+    // Until then it billed Sonnet 5 at $3/$15 — above Anthropic's price.
+    inPerM: 2,
+    outPerM: 10,
+    note: "Balanced flagship · credits only",
     tier: "premium",
   },
   {
@@ -285,8 +333,22 @@ export const PREMIUM_MODELS: readonly ModelSpec[] = [
     name: "GPT-5.6 Sol",
     family: "OpenAI",
     color: "#74aa9c",
-    inPerM: 5,
-    outPerM: 30,
+    // Re-pinned 2026-09-25 from developers.openai.com/api/docs/pricing (Standard,
+    // short context): $4.00 input · $0.40 cached input · $5.00 cache writes ·
+    // $20.00 output (was $5/$30). This is PROMOTIONAL pricing — the page says:
+    //   "GPT-5.6 Sol's promotional pricing is available at least through
+    //    November 21, 2026."
+    // RE-CHECK ON 2026-11-21 and re-pin (bump PRICE_SHEET_DATE) if it changes.
+    // Cached $0.40 = cacheMultiplier("openai") 0.10 × $4.00 and cache writes $5.00 =
+    // CACHE_WRITE_MULTIPLIER 1.25 × $4.00, so no multiplier changes are needed.
+    // A LONG-CONTEXT tier also exists ($8.00 in / $0.80 cached / $10.00 writes /
+    // $30.00 out). Chat stays below it: prompts are capped by MAX_INPUT_CHARS +
+    // MAX_HISTORY_CHARS + MAX_ATTACH_CHARS + 3 recalled memories (~52k characters,
+    // roughly 13k tokens of English). The page as read did not state the threshold, and GROUNDED
+    // calls add retrieved-page tokens server-side — if a receipt ever shows input
+    // near the long-context threshold, re-check which tier OpenAI billed.
+    inPerM: 4,
+    outPerM: 20,
     note: "OpenAI flagship · credits only",
     tier: "premium",
   },
@@ -309,6 +371,65 @@ export const ALL_MODELS: readonly ModelSpec[] = [...MODEL_REGISTRY, ...PREMIUM_M
 
 export function getModel(id: string): ModelSpec | undefined {
   return ALL_MODELS.find(m => m.id === id);
+}
+
+// ── RETIRED — sealed history only, never selectable ─────────────────────────
+// Models the gate once served and its provider has since withdrawn. They are
+// deliberately NOT in ALL_MODELS, so getModel() refuses them and nothing can be
+// billed to them again. They stay listed so that everything already SEALED under
+// their ids keeps its meaning: the boot list returns them as `retiredModels` so a
+// restored session still shows who answered, and a request naming one gets an
+// explanation (410) instead of "Unknown model.". The in-browser verifier keeps its
+// own append-only id → providerModel map (lib/sealVerify.ts PROVIDER_MODEL), and
+// server-side memory recall hashes the sealed model id verbatim without a registry
+// lookup — retiring a model must never break a seal. Append-only: never delete one.
+export interface RetiredModel {
+  id: string;
+  providerModel: string;
+  name: string;
+  family: string;
+  color: string;
+  retiredOn: string;    // day the gate stopped offering it (ISO date)
+  why: string;
+  lastRates?: { inPerM: number; outPerM: number }; // last pinned rate, for the record (when known)
+}
+
+export const RETIRED_MODELS: readonly RetiredModel[] = [
+  {
+    // The Alibaba seat before 2026-07-17 (the id is assumed to follow the same
+    // pattern as its successors; harmless if nothing was ever sealed under it).
+    id: "qwen3-32b",
+    providerModel: "qwen/qwen3-32b",
+    name: "Qwen3 32B",
+    family: "Alibaba",
+    color: "#b39ddb",
+    retiredOn: "2026-07-17",
+    why: "Groq decommissioned qwen/qwen3-32b on 2026-07-17 (deprecation email 2026-07-14); succeeded by qwen/qwen3.6-27b",
+  },
+  {
+    id: "llama-3.3-70b",
+    providerModel: "llama-3.3-70b-versatile",
+    name: "Llama 3.3 70B",
+    family: "Meta",
+    color: "#c8a96e",
+    retiredOn: "2026-09-25",
+    why: "Groq's on-demand API returns 404 model_not_found; Groq's model table now lists it as Enterprise / Contact Sales only",
+    lastRates: { inPerM: 0.59, outPerM: 0.79 },
+  },
+  {
+    id: "qwen3.6-27b",
+    providerModel: "qwen/qwen3.6-27b",
+    name: "Qwen 3.6 27B",
+    family: "Alibaba",
+    color: "#b39ddb",
+    retiredOn: "2026-09-25",
+    why: "Groq's on-demand API returns 404 model_not_found; succeeded by qwen/qwen3.8-27b",
+    lastRates: { inPerM: 0.60, outPerM: 3.00 },
+  },
+] as const;
+
+export function getRetiredModel(id: string): RetiredModel | undefined {
+  return RETIRED_MODELS.find(m => m.id === id);
 }
 
 // ── Receipt ──────────────────────────────────────────────────────────────
@@ -354,9 +475,9 @@ export interface Receipt {
 const usd = (v: number) => Number(v.toFixed(9));
 
 export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0, now: Date = new Date()): Receipt {
-  // Rates in force at the moment of the query — a scheduled price step (e.g.
-  // Sonnet 5's intro pricing ending Aug 31) applies automatically, so the receipt
-  // never diverges from what the provider actually charges.
+  // Rates in force at the moment of the query — a scheduled price step (see
+  // ModelSpec.scheduledRate) applies automatically, so the receipt tracks what
+  // the provider charges.
   const { inPerM, outPerM } = effectiveRates(spec, now);
   // Split input into cache-hits (billed cheap) and uncached (billed full), exactly
   // as the provider does. Billing everything at the full input rate over-charged

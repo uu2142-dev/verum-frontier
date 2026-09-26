@@ -1,6 +1,8 @@
 // ── /api/chat — the real gate ────────────────────────────────────────────
-// Server-side calls to free-tier council models (Groq: Meta/OpenAI-OSS/Qwen,
-// Google: Gemini). Returns the model's answer plus:
+// Server-side calls to free-tier council models (Groq: OpenAI open-weight
+// GPT-OSS + Alibaba Qwen; Google: Gemini — three families since 2026-09-25,
+// when Groq's Llama retirement took the Meta seat) and the credits-only premium
+// council. Returns the model's answer plus:
 //   - real token usage from the provider
 //   - a cost-plus receipt (direct + 5% infra + 15% support)
 //   - a validated bias screen (dual-head: toxicity AUROC 0.92 5-fold,
@@ -9,17 +11,25 @@
 //   - real SHA-256 leaf hashes + Merkle root over the exchange
 //   - stage timings measured server-side
 // Everything returned here is real. Anything illustrative stays in DEMO mode.
+//
+// GET /api/chat              → public boot list (models, quota, seal key); additive
+//                              changes only (see GET).
+// GET /api/chat?health=1     → OPERATOR-ONLY model health (bearer MODEL_HEALTH_TOKEN
+//                              or Vercel's CRON_SECRET): one tiny real call per
+//                              free-council model, so a withdrawn model shows up the
+//                              first time anyone (or a cron) checks (added 2026-09-25).
 
 import {
   createHash,
   createPrivateKey,
   createPublicKey,
   sign as cryptoSign,
+  timingSafeEqual,
   verify as cryptoVerify,
   type KeyObject,
 } from "node:crypto";
 import { NextResponse } from "next/server";
-import { MODEL_REGISTRY, PREMIUM_MODELS, getModel, buildReceipt, effectiveRates, GROUNDING_COST_USD, ANTHROPIC_SEARCH_COST_USD, type ModelSpec, type Usage } from "@/lib/pricing";
+import { MODEL_REGISTRY, PREMIUM_MODELS, RETIRED_MODELS, PRICE_SHEET_DATE, getModel, getRetiredModel, buildReceipt, effectiveRates, GROUNDING_COST_USD, ANTHROPIC_SEARCH_COST_USD, type ModelSpec, type Usage } from "@/lib/pricing";
 import { FREE_DAILY_LIMIT, QUOTA_COOKIE, decodeQuota, encodeQuota, quotaResetIso } from "@/lib/quota";
 import { debitWallet, walletBalance } from "@/lib/ledger";
 import { stripeConfigured, stripeTestMode } from "@/lib/stripe";
@@ -147,6 +157,12 @@ const MEM_RESPONSE_CHARS = 900;
 // the TEXT belongs to that root: recompute the QUERY/RESPONSE leaf hashes
 // from the claimed text, confirm they appear in the provided leaves, and
 // confirm the leaves recompute to the signed root. Tampered text fails here.
+//
+// m.modelId is hashed VERBATIM and deliberately never looked up in the live
+// registry: a memory sealed under a model that has since been retired
+// (llama-3.3-70b, qwen3.6-27b, qwen3-32b — see RETIRED_MODELS) must still verify
+// and still be recallable. Gating this on getModel() would silently turn every
+// such memory into a "REJECTED (bad signature)" — a false tamper verdict.
 function verifyMemoryContent(m: MemoryIn): boolean {
   if (!m.sig?.signature || !Array.isArray(m.leaves) || !m.leaves.length) return false;
   if (!verifySealSig(m.root, m.sealedAt, m.sig.signature)) return false;
@@ -218,9 +234,92 @@ function merkleRoot(leaves: string[]): string {
   return level[0];
 }
 
+// ── Model availability: kill-switch + retirement ─────────────────────────
+// Groq retired Llama 3.3 70B and Qwen 3.6 27B and this gate kept offering both
+// (Llama was the DEFAULT pick) — every call to them came back 502 and nothing
+// flagged it. Guards now (plus the operator health check, GET ?health=1):
+//   1. VERUM_DISABLED_MODELS (comma-separated OUR ids, e.g. "qwen3.8-27b") hides a
+//      model from the boot list and refuses it here, instantly, as a Vercel env
+//      edit + redeploy. It can only REMOVE a model. It can never repoint a pinned
+//      price at a different provider model — adding or swapping a model is still
+//      a code change, because its rate must be re-verified from the provider's
+//      own page first (see lib/pricing.ts).
+//   2. Retired ids (RETIRED_MODELS) are refused with 410 + an explanation instead
+//      of "Unknown model." — while everything SEALED under them still verifies.
+
+function disabledModelIds(): Set<string> {
+  return new Set(
+    (process.env.VERUM_DISABLED_MODELS ?? "").split(",").map(s => s.trim()).filter(Boolean),
+  );
+}
+
+function modelEnabled(id: string): boolean {
+  return !disabledModelIds().has(id);
+}
+
+// ── Secret scrubbing ─────────────────────────────────────────────────────
+// Provider error bodies are passed through to the visitor (502) and to logs.
+// None of ours put a key in an error today — Gemini's key rides the
+// x-goog-api-key HEADER, never the URL, for exactly this reason — but an error
+// string is the classic leak path (it happened in another RHAI project in July),
+// so every error that leaves this function is scrubbed first: the literal values
+// of our own secrets, then common key shapes as a backstop.
+const SECRET_ENV_NAMES = [
+  "GROQ_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY",
+  "SEAL_SIGNING_KEY", "QUOTA_SECRET", "BIAS_TOKEN", "CREDITS_TOKEN", "STRIPE_SECRET_KEY",
+  "MODEL_HEALTH_TOKEN", "CRON_SECRET",
+] as const;
+
+function scrubSecrets(s: string): string {
+  let out = s;
+  for (const name of SECRET_ENV_NAMES) {
+    const v = process.env[name];
+    if (v && v.length >= 8) out = out.split(v).join(`[${name} REDACTED]`);
+  }
+  return out
+    .replace(/\bgsk_[A-Za-z0-9]{8,}/g, "gsk_[REDACTED]")
+    .replace(/\bAIza[0-9A-Za-z_-]{20,}/g, "AIza[REDACTED]")
+    .replace(/\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{8,}/g, "sk-[REDACTED]")
+    .replace(/\b(sk|rk)_(live|test)_[A-Za-z0-9]{8,}/g, "$1_$2_[REDACTED]")
+    .replace(/\bxai-[A-Za-z0-9_-]{8,}/g, "xai-[REDACTED]")
+    .replace(/\b(Bearer)\s+[A-Za-z0-9._~+\/=-]{8,}/gi, "$1 [REDACTED]")
+    .replace(/([?&](?:key|api_key|apikey|token)=)[^&\s"']+/gi, "$1[REDACTED]");
+}
+
 // ── Providers ────────────────────────────────────────────────────────────
 
-async function callGroq(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number) {
+// ONE retry on a transient upstream status (spec 2026-09-25: Groq 429/502/503
+// after ~2s, Gemini 429/503 after ~3s). The visitor is only ever billed from the
+// usage the ANSWERING call reports, so a retry can't double-charge anyone. The
+// retry is disclosed in the LLM CALL stage, and its wait is inside the sealed
+// llmMs — a retried answer is never presented as a first-try one. The same
+// AbortSignal spans both attempts, so the total never exceeds the timeout.
+// Free-council adapters only; the premium adapters are unchanged.
+const GROQ_RETRY_STATUSES: readonly number[] = [429, 502, 503];
+const GROQ_RETRY_DELAY_MS = 2_000;
+const GEMINI_RETRY_STATUSES: readonly number[] = [429, 503];
+const GEMINI_RETRY_DELAY_MS = 3_000;
+
+async function fetchRetryOnce(
+  url: string,
+  init: RequestInit,
+  retryOn: readonly number[],
+  delayMs: number,
+): Promise<{ res: Response; retriedAfter: number | null }> {
+  const first = await fetch(url, init);
+  if (!retryOn.includes(first.status)) return { res: first, retriedAfter: null };
+  await first.body?.cancel().catch(() => undefined); // release the connection
+  await new Promise(r => setTimeout(r, delayMs));
+  return { res: await fetch(url, init), retriedAfter: first.status };
+}
+
+async function callGroq(
+  spec: ModelSpec,
+  messages: ChatMessage[],
+  memoryContext: string | null,
+  maxTokens: number,
+  timeoutMs: number = PROVIDER_TIMEOUT_MS,
+) {
   const base = systemPrompt(spec);
   const sys = memoryContext ? `${base}\n\n${memoryContext}` : base;
   const body: Record<string, unknown> = {
@@ -229,17 +328,45 @@ async function callGroq(spec: ModelSpec, messages: ChatMessage[], memoryContext:
     max_completion_tokens: maxTokens,
     temperature: 0.7,
   };
-  if (spec.providerModel.startsWith("qwen/")) body.reasoning_format = "hidden";
+  // Per-family call shape, probe-verified 2026-09-25 against Groq's live API:
+  //   qwen/*            reasoning_format:"hidden" — reasoning stays out of content
+  //                     (the <think> strip below stays as a belt-and-braces guard)
+  //                     + reasoning_effort:"none" — instruct mode, which Groq's own
+  //                     Qwen 3.8 page recommends "for efficient, general-purpose
+  //                     dialogue". Hidden reasoning is still generated, billed as
+  //                     output and counted against max_completion_tokens; "none"
+  //                     stops the model spending the 1,024-token free cap thinking
+  //                     and returning an empty answer. This exact combined shape
+  //                     (gate system prompt, temperature 0.7, caps 1024 and 24)
+  //                     answered 200 with clean content and no <think> on 3/3 calls.
+  //   openai/gpt-oss-*  reasoning_effort:"low" — fast (~0.3–0.5s) and cheap; the
+  //                     reasoning arrives in a SEPARATE message.reasoning field and
+  //                     never in content, so nothing to strip. Never send
+  //                     reasoning_format to gpt-oss. Reasoning tokens count against
+  //                     max_completion_tokens and bill as output, so the receipt
+  //                     (which reads completion_tokens) carries them honestly.
+  // If a model still returns no text (cap spent on reasoning), POST refuses to
+  // seal or bill it — see the empty-answer guard after the adapter call.
+  if (spec.providerModel.startsWith("qwen/")) {
+    body.reasoning_format = "hidden";
+    body.reasoning_effort = "none";
+  }
+  if (spec.providerModel.startsWith("openai/gpt-oss")) body.reasoning_effort = "low";
 
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      "Content-Type": "application/json",
+  const { res, retriedAfter } = await fetchRetryOnce(
+    "https://api.groq.com/openai/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
     },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
-  });
+    GROQ_RETRY_STATUSES,
+    GROQ_RETRY_DELAY_MS,
+  );
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     throw new Error(`Groq ${res.status}: ${detail.slice(0, 300)}`);
@@ -250,19 +377,37 @@ async function callGroq(spec: ModelSpec, messages: ChatMessage[], memoryContext:
   const usage: Usage = {
     inputTokens: data.usage?.prompt_tokens ?? 0,
     outputTokens: data.usage?.completion_tokens ?? 0,
-    cachedInputTokens: data.usage?.prompt_tokens_details?.cached_tokens ?? 0, // Groq: no caching → 0
+    // Groq's docs now list cached-input rates for GPT-OSS, so this can be > 0.
+    // cacheMultiplier("groq") is still 1.0 (bills cache hits at the full input
+    // rate) — deliberately unchanged in the 2026-09-25 migration; see pricing.ts.
+    cachedInputTokens: data.usage?.prompt_tokens_details?.cached_tokens ?? 0,
   };
-  return { text, usage, truncated: data.choices?.[0]?.finish_reason === "length" };
+  return { text, usage, truncated: data.choices?.[0]?.finish_reason === "length", retriedAfter };
 }
 
-async function callGemini(spec: ModelSpec, messages: ChatMessage[], memoryContext: string | null, maxTokens: number) {
+async function callGemini(
+  spec: ModelSpec,
+  messages: ChatMessage[],
+  memoryContext: string | null,
+  maxTokens: number,
+  timeoutMs: number = PROVIDER_TIMEOUT_MS,
+) {
   const base = systemPrompt(spec);
   const sys = memoryContext ? `${base}\n\n${memoryContext}` : base;
   const contents = messages.map(m => ({
     role: m.role === "assistant" ? "model" : "user",
     parts: [{ text: m.content }],
   }));
-  const res = await fetch(
+  const generationConfig: Record<string, unknown> = {
+    maxOutputTokens: maxTokens,
+    temperature: 0.7,
+  };
+  // gemini-2.5-* are thinking models; without thinkingBudget:0 they can spend
+  // the whole output budget on reasoning and return empty text. ONLY 2.5 gets
+  // it — gemini-3* take no thinkingConfig (the 2026-09-25 probe answered cleanly
+  // without one), so a future Gemini chip can't inherit this field by accident.
+  if (spec.providerModel.startsWith("gemini-2.5")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+  const { res, retriedAfter } = await fetchRetryOnce(
     `https://generativelanguage.googleapis.com/v1beta/models/${spec.providerModel}:generateContent`,
     {
       method: "POST",
@@ -273,16 +418,12 @@ async function callGemini(spec: ModelSpec, messages: ChatMessage[], memoryContex
       body: JSON.stringify({
         contents,
         systemInstruction: { parts: [{ text: sys }] },
-        generationConfig: {
-          maxOutputTokens: maxTokens,
-          temperature: 0.7,
-          // gemini-2.5-flash is a thinking model; without this it can spend
-          // the whole output budget on reasoning and return empty text.
-          thinkingConfig: { thinkingBudget: 0 },
-        },
+        generationConfig,
       }),
-      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     },
+    GEMINI_RETRY_STATUSES,
+    GEMINI_RETRY_DELAY_MS,
   );
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
@@ -297,7 +438,7 @@ async function callGemini(spec: ModelSpec, messages: ChatMessage[], memoryContex
     outputTokens: (um.candidatesTokenCount ?? 0) + (um.thoughtsTokenCount ?? 0),
     cachedInputTokens: um.cachedContentTokenCount ?? 0,
   };
-  return { text, usage, truncated: data.candidates?.[0]?.finishReason === "MAX_TOKENS" };
+  return { text, usage, truncated: data.candidates?.[0]?.finishReason === "MAX_TOKENS", retriedAfter };
 }
 
 export interface GroundingSource { title: string; uri: string; }
@@ -316,7 +457,9 @@ async function callGeminiGrounded(spec: ModelSpec, messages: ChatMessage[], memo
     role: m.role === "assistant" ? "model" : "user",
     parts: [{ text: m.content }],
   }));
-  const res = await fetch(
+  // Same one-retry-on-429/503 as callGemini: a rejected request retrieves (and
+  // bills) nothing, so retrying can't double the $0.035 search surcharge.
+  const { res, retriedAfter } = await fetchRetryOnce(
     `https://generativelanguage.googleapis.com/v1beta/models/${spec.providerModel}:generateContent`,
     {
       method: "POST",
@@ -332,6 +475,8 @@ async function callGeminiGrounded(spec: ModelSpec, messages: ChatMessage[], memo
       }),
       signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
     },
+    GEMINI_RETRY_STATUSES,
+    GEMINI_RETRY_DELAY_MS,
   );
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
@@ -360,7 +505,7 @@ async function callGeminiGrounded(spec: ModelSpec, messages: ChatMessage[], memo
   return {
     text, usage,
     truncated: data.candidates?.[0]?.finishReason === "MAX_TOKENS",
-    sources, searchQueries,
+    sources, searchQueries, retriedAfter,
   };
 }
 
@@ -713,18 +858,128 @@ async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], mem
   return { text, usage, truncated, sources, searchQueries, searchRequests };
 }
 
+// ── Model health (operator-only) ─────────────────────────────────────────
+// One tiny REAL call per free-council model (the same adapter, call shape and
+// retry the gate uses for visitors, capped at 8 output tokens with a 20s
+// timeout, run in parallel) → { id: "ok" | "<status> <short reason>" }. Every
+// reason passes through scrubSecrets; every failure also logs a
+// "WARNING model_unavailable ..." line. On demand only (plus an optional daily
+// Vercel cron — see CHANGES.md), never per visitor request. The pings are the
+// operator's cost (a few hundred tokens), not receipted and not sealed.
+// Premium models are NOT pinged: they are credits-only and their providers bill
+// at frontier rates; check those from a funded wallet.
+//
+// Auth: "Authorization: Bearer <MODEL_HEALTH_TOKEN>" (or <CRON_SECRET>, which is
+// what Vercel Cron sends). With neither configured (>= 16 chars) the route does
+// not exist (404). The token is compared as SHA-256 digests with timingSafeEqual
+// and is never accepted from the URL.
+const HEALTH_TIMEOUT_MS = 20_000;
+const HEALTH_MAX_TOKENS = 8;
+
+function healthAuth(req: Request): "ok" | "unconfigured" | "denied" {
+  const accepted = [process.env.MODEL_HEALTH_TOKEN, process.env.CRON_SECRET]
+    .filter((t): t is string => typeof t === "string" && t.length >= 16);
+  if (!accepted.length) return "unconfigured";
+  const m = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("authorization") ?? "");
+  if (!m) return "denied";
+  const given = createHash("sha256").update(m[1], "utf8").digest();
+  return accepted.some(t => timingSafeEqual(given, createHash("sha256").update(t, "utf8").digest()))
+    ? "ok"
+    : "denied";
+}
+
+// "Groq 404: {json}" → "404 <provider's error.message>"; timeouts → "timeout ...".
+function healthReason(raw: string): string {
+  const m = /^[A-Za-z ()]+ (\d{3}): ([\s\S]*)$/.exec(raw);
+  let reason: string;
+  if (m) {
+    let detail = m[2];
+    try {
+      const j = JSON.parse(detail);
+      if (typeof j?.error?.message === "string") detail = j.error.message;
+    } catch {
+      // Body truncated at 300 chars (Gemini's errors usually are) or not JSON:
+      // pull the first "message" string out of it if there is one.
+      const msg = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(detail);
+      if (msg) detail = msg[1];
+    }
+    reason = `${m[1]} ${detail}`;
+  } else {
+    reason = /timeout|aborted/i.test(raw) ? `timeout ${raw}` : `error ${raw}`;
+  }
+  return scrubSecrets(reason).replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+async function pingModel(spec: ModelSpec): Promise<string> {
+  if (!modelEnabled(spec.id)) return "disabled (VERUM_DISABLED_MODELS)";
+  if (!providerConfigured(spec.provider)) return "not configured (provider API key unset)";
+  const msgs: ChatMessage[] = [{ role: "user", content: "Reply with the single word OK." }];
+  try {
+    const out = spec.provider === "groq"
+      ? await callGroq(spec, msgs, null, HEALTH_MAX_TOKENS, HEALTH_TIMEOUT_MS)
+      : await callGemini(spec, msgs, null, HEALTH_MAX_TOKENS, HEALTH_TIMEOUT_MS);
+    // Status only: an 8-token cap can legitimately end in "length" with empty
+    // content (gpt-oss spends it reasoning). HTTP 200 = the model is served.
+    return out.retriedAfter ? `ok (after one retry on HTTP ${out.retriedAfter})` : "ok";
+  } catch (e) {
+    const reason = healthReason(e instanceof Error ? e.message : String(e));
+    console.warn(
+      `WARNING model_unavailable id=${spec.id} model=${spec.providerModel} ` +
+      `provider=${spec.provider} source=health reason=${JSON.stringify(reason)}`,
+    );
+    return reason;
+  }
+}
+
+async function modelHealthResponse(req: Request) {
+  const auth = healthAuth(req);
+  if (auth === "unconfigured") return NextResponse.json({ error: "Not found." }, { status: 404 });
+  if (auth === "denied") {
+    return NextResponse.json(
+      { error: "Unauthorized." },
+      { status: 401, headers: { "WWW-Authenticate": "Bearer" } },
+    );
+  }
+  const t0 = Date.now();
+  const results = await Promise.all(
+    MODEL_REGISTRY.map(async m => [m.id, await pingModel(m)] as const),
+  );
+  const health: Record<string, string> = Object.fromEntries(results);
+  const answering = MODEL_REGISTRY.filter(m => health[m.id].startsWith("ok"));
+  return NextResponse.json(
+    {
+      checkedAt: new Date().toISOString(),
+      ms: Date.now() - t0,
+      priceSheetDate: PRICE_SHEET_DATE,
+      allOk: answering.length === MODEL_REGISTRY.length,
+      health,
+      providerModels: Object.fromEntries(MODEL_REGISTRY.map(m => [m.id, m.providerModel])),
+      // What the gate's "N model families" copy will truthfully say right now.
+      answeringFamilies: Array.from(new Set(answering.map(m => m.family))),
+      premium: "not pinged (credits-only frontier models)",
+    },
+    { headers: { "Cache-Control": "no-store" } },
+  );
+}
+
 // ── GET: model registry + quota status (client boot) ────────────────────
 
 export async function GET(req: Request) {
+  // Operator health check. Only this exact query parameter reaches it; the
+  // public boot response below is unchanged apart from two ADDED behaviours
+  // (models hidden by VERUM_DISABLED_MODELS; a `retiredModels` display list).
+  if (new URL(req.url).searchParams.has("health")) return modelHealthResponse(req);
+
   const cookie = getCookie(req, QUOTA_COOKIE);
   const q = decodeQuota(cookie);
   const k = signingKeys();
   return NextResponse.json({
     // Free council always; premium only where the provider key is configured.
+    // Either way, never a model the operator switched off (VERUM_DISABLED_MODELS).
     models: [
       ...MODEL_REGISTRY,
       ...PREMIUM_MODELS.filter(m => providerConfigured(m.provider)),
-    ].map(m => ({
+    ].filter(m => modelEnabled(m.id)).map(m => ({
       id: m.id, name: m.name, family: m.family, color: m.color,
       // Advertise the rates in force NOW (a scheduled step applies automatically),
       // so chips, the ALICE router, and the Models tab match the receipt exactly.
@@ -733,10 +988,16 @@ export async function GET(req: Request) {
       // Native retrieval: GROUND IT is additive for these, not a substitution.
       selfGrounds: m.provider === "anthropic" || m.provider === "openai" || m.provider === "xai",
     })),
+    // ADDED 2026-09-25 — display metadata ONLY (no rates, not selectable) for
+    // models the gate once served, so a restored session or archive still shows
+    // who answered an exchange sealed under a retired id.
+    retiredModels: RETIRED_MODELS.map(m => ({
+      id: m.id, name: m.name, family: m.family, color: m.color, retiredOn: m.retiredOn,
+    })),
     quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
     payments: { enabled: stripeConfigured(), testMode: stripeTestMode() },
     grounding: {
-      available: !!process.env.GEMINI_API_KEY,
+      available: !!process.env.GEMINI_API_KEY && modelEnabled(GROUNDING_MODEL_ID),
       via: "Gemini 2.5 Flash + Google Search",
       modelId: GROUNDING_MODEL_ID, // client warns when this would override a pick
       surchargeUsd: GROUNDING_COST_USD,
@@ -772,8 +1033,33 @@ export async function POST(req: Request) {
   } catch {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
-  const spec = getModel(body.modelId ?? "");
-  if (!spec) return NextResponse.json({ error: "Unknown model." }, { status: 400 });
+  const requestedModelId = typeof body.modelId === "string" ? body.modelId : "";
+  const spec = getModel(requestedModelId);
+  if (!spec) {
+    // A retired id (e.g. from a stale tab or an old saved pick) gets the reason,
+    // not a bare "Unknown model." — nothing is called and nothing is billed.
+    const retired = getRetiredModel(requestedModelId);
+    if (retired) {
+      return NextResponse.json(
+        {
+          error: `${retired.name} was retired from the gate on ${retired.retiredOn} (${retired.why}). ` +
+            "Pick another model. Sessions already sealed with it still verify.",
+          retired: true,
+        },
+        { status: 410 },
+      );
+    }
+    return NextResponse.json({ error: "Unknown model." }, { status: 400 });
+  }
+  if (!modelEnabled(spec.id)) {
+    return NextResponse.json(
+      {
+        error: `${spec.name} is temporarily unavailable — switched off by the operator while its provider has a problem. Pick another model.`,
+        disabled: true,
+      },
+      { status: 503 },
+    );
+  }
 
   const messages = (body.messages ?? []).slice(-MAX_HISTORY_MESSAGES);
   if (!messages.length || messages[messages.length - 1].role !== "user") {
@@ -847,7 +1133,9 @@ export async function POST(req: Request) {
   // Completions search_parameters (confirmed shape, per-source billing) — its
   // first live grounded round-trip is the verification.
   const selfGrounds = spec.provider === "anthropic" || spec.provider === "openai" || spec.provider === "xai";
-  const geminiSpec = getModel(GROUNDING_MODEL_ID);
+  // A switched-off Gemini can't relay: the answer then comes from the picked
+  // model, honestly labeled "retrieval was requested but no search was run".
+  const geminiSpec = modelEnabled(GROUNDING_MODEL_ID) ? getModel(GROUNDING_MODEL_ID) : undefined;
   const useRelay = groundingRequested && !selfGrounds && !!geminiSpec;
   const callSpec = useRelay && geminiSpec ? geminiSpec : spec;
 
@@ -969,6 +1257,9 @@ export async function POST(req: Request) {
   let declined = false;
   let grounding: { sources: GroundingSource[]; searchQueries: string[] } | null = null;
   let searchRequests = 0;
+  // Free-council adapters retry ONCE on a transient status; when they did, the
+  // LLM CALL stage says so (the wait is inside the sealed llmMs).
+  let retriedAfter: number | null = null;
   try {
     if (useRelay) {
       // Relay: Gemini retrieves AND answers. Second-hand for the model you picked.
@@ -976,6 +1267,7 @@ export async function POST(req: Request) {
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
       grounding = { sources: out.sources, searchQueries: out.searchQueries };
       searchRequests = 1;
+      retriedAfter = out.retriedAfter;
     } else if (callSpec.provider === "anthropic") {
       // Native: the selected model searches and reasons in one turn.
       const out = await callAnthropic(callSpec, providerMessages, memoryContext, outputCap, groundingRequested);
@@ -1013,10 +1305,47 @@ export async function POST(req: Request) {
         ? await callGroq(callSpec, providerMessages, memoryContext, outputCap)
         : await callGemini(callSpec, providerMessages, memoryContext, outputCap);
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
+      retriedAfter = out.retriedAfter;
     }
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Provider call failed.";
+    // Scrubbed before it reaches the visitor or the log, and logged as a
+    // WARNING so a dead model shows up in the Vercel logs the first time it
+    // fails instead of weeks later. Nothing was billed: no receipt, no debit.
+    const msg = scrubSecrets(e instanceof Error ? e.message : "Provider call failed.");
+    console.warn(
+      `WARNING model_unavailable id=${callSpec.id} model=${callSpec.providerModel} ` +
+      `provider=${callSpec.provider} source=chat reason=${JSON.stringify(msg.slice(0, 300))}`,
+    );
     return NextResponse.json({ error: msg }, { status: 502 });
+  }
+  // EMPTY ANSWER = a failed call, not an exchange. A reasoning model (gpt-oss at
+  // reasoning_effort "low", Qwen with reasoning_format "hidden") can spend the
+  // whole output cap reasoning and come back HTTP 200 with content "" and finish
+  // "length"; any provider can also return 200 with no text. Sealing that would
+  // stamp an empty RESPONSE leaf, spend one of the visitor's free queries and, on
+  // credits, debit a wallet for an answer with no words in it. So it takes the
+  // provider-failure path: WARNING in the logs, 502 with the same {error} shape,
+  // no receipt, no debit, and no quota tick (the quota cookie is only ever set on
+  // the success path below). A NON-empty truncated answer is still delivered as a
+  // disclosed partial ("CAP HIT"), because the "continue" flow depends on it. A
+  // provider DECLINE carries the gate's own note as its text, so it never lands
+  // here; the !declined check keeps that true if the note ever changes.
+  if (!text.trim() && !declined) {
+    console.warn(
+      `WARNING model_unavailable id=${callSpec.id} model=${callSpec.providerModel} ` +
+      `provider=${callSpec.provider} source=chat reason=empty_content truncated=${truncated}`,
+    );
+    return NextResponse.json(
+      {
+        error: truncated
+          ? `${callSpec.name} used its whole ${outputCap.toLocaleString()}-token output budget before writing ` +
+            "any answer text (its reasoning counts against that cap). Nothing was charged and no free query " +
+            "was used. Try again, narrow the question, or pick another model."
+          : `${callSpec.name} returned an empty answer. Nothing was charged and no free query was used. ` +
+            "Try again or pick another model.",
+      },
+      { status: 502 },
+    );
   }
   const tLlm = Date.now();
   const isGrounded = grounding !== null;
@@ -1137,7 +1466,7 @@ export async function POST(req: Request) {
           : "no relevant memories recalled",
         ms: tMem - tIntent,
       },
-      { label: `LLM CALL — ${callSpec.name}${isGrounded ? " (grounded)" : ""}`, detail: `${callSpec.providerModel} via ${callSpec.provider}${groundingRequested && callSpec.id !== spec.id ? ` (GROUND IT overrode ${spec.name})` : ""} · output cap ${outputCap.toLocaleString()}${truncated ? " — CAP HIT, answer truncated" : ""}`, ms: tLlm - tMem },
+      { label: `LLM CALL — ${callSpec.name}${isGrounded ? " (grounded)" : ""}`, detail: `${callSpec.providerModel} via ${callSpec.provider}${groundingRequested && callSpec.id !== spec.id ? ` (GROUND IT overrode ${spec.name})` : ""} · output cap ${outputCap.toLocaleString()}${truncated ? " — CAP HIT, answer truncated" : ""}${retriedAfter ? ` · retried once after provider HTTP ${retriedAfter}` : ""}`, ms: tLlm - tMem },
       {
         label: isGrounded && !useRelay ? "GROUNDING — NATIVE (first-hand)" : "GROUNDING",
         detail: isGrounded
