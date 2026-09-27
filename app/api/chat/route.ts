@@ -29,7 +29,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { NextResponse } from "next/server";
-import { MODEL_REGISTRY, PREMIUM_MODELS, RETIRED_MODELS, PRICE_SHEET_DATE, getModel, getRetiredModel, buildReceipt, effectiveRates, GROUNDING_COST_USD, ANTHROPIC_SEARCH_COST_USD, type ModelSpec, type Usage } from "@/lib/pricing";
+import { MODEL_REGISTRY, PREMIUM_MODELS, RETIRED_MODELS, PRICE_SHEET_DATE, getModel, getRetiredModel, buildReceipt, buildDeclinedReceipt, providerBillsRefusal, effectiveRates, GROUNDING_COST_USD, ANTHROPIC_SEARCH_COST_USD, type ModelSpec, type Usage } from "@/lib/pricing";
 import { FREE_DAILY_LIMIT, QUOTA_COOKIE, decodeQuota, encodeQuota, quotaResetIso } from "@/lib/quota";
 import { debitWallet, walletBalance } from "@/lib/ledger";
 import { stripeConfigured, stripeTestMode } from "@/lib/stripe";
@@ -598,17 +598,31 @@ async function callAnthropic(
   // content. Check stop_reason BEFORE reading content, or the gate throws on a
   // refusal instead of reporting it honestly.
   if (data.stop_reason === "refusal") {
+    // stop_details.category names the policy area; null is a normal, permanent
+    // value (no named category). It decides whether Anthropic billed the call —
+    // see BILLED_PREOUTPUT_REFUSAL_CATEGORIES in lib/pricing.ts.
+    const rawCategory = data.stop_details?.category;
+    const refusalCategory: string | null =
+      typeof rawCategory === "string" && rawCategory ? rawCategory.slice(0, 64) : null;
+    const billed = providerBillsRefusal(refusalCategory, usage.outputTokens);
     return {
       // NOT model output — the gate wrote this. Said plainly, because the string
       // lands in the assistant slot where a reader (and, until this was fixed,
       // the next model in the thread) would take it for something the model said.
-      // The old wording also asserted the receipt "reflects what was actually
-      // billed", which we had never reconciled for this path; it now claims only
-      // what we can support — the counts the provider reported.
+      // It states whether the provider billed the call, from the same rule the
+      // receipt and the debit use, so the note and the charge cannot disagree.
       text: "⚠ GATE NOTE (not model output): this model declined the request under its own " +
-        "safety policy (stop_reason: refusal), and returned no content. The receipt shows the " +
-        "token counts the provider reported for this call.",
+        `safety policy (stop_reason: refusal, category: ${refusalCategory ?? "none named"}), and returned no content. ` +
+        (billed
+          ? (usage.outputTokens > 0
+              ? "The decline came after output began, which Anthropic bills at normal rates in any category, " +
+                "so the receipt bills the token counts the provider reported, cost-plus as usual."
+              : "Anthropic bills a refusal in this category even before any output, so the receipt bills " +
+                "the token counts the provider reported, cost-plus as usual.")
+          : "Anthropic does not bill a refusal in this category that arrives before any output, so this " +
+            "turn is not charged. The receipt shows the token counts the provider reported — reported, not billed."),
       declined: true,
+      refusalCategory,
       usage,
       truncated: false,
       sources: [] as GroundingSource[],
@@ -1255,6 +1269,9 @@ export async function POST(req: Request) {
   // Set when the PROVIDER declined and the gate substituted its own note, so the
   // client and the sealed export can say that the text is ours, not the model's.
   let declined = false;
+  // The provider's stop_details.category for a decline (null = none named).
+  // Whether the provider billed the call turns on it, so our charge does too.
+  let refusalCategory: string | null = null;
   let grounding: { sources: GroundingSource[]; searchQueries: string[] } | null = null;
   let searchRequests = 0;
   // Free-council adapters retry ONCE on a transient status; when they did, the
@@ -1273,6 +1290,7 @@ export async function POST(req: Request) {
       const out = await callAnthropic(callSpec, providerMessages, memoryContext, outputCap, groundingRequested);
       text = out.text; usage = out.usage; truncated = out.truncated ?? false;
       declined = "declined" in out && out.declined === true;
+      refusalCategory = ("refusalCategory" in out ? out.refusalCategory : null) ?? null;
       searchRequests = out.searchRequests;
       if (groundingRequested && out.sources.length) {
         grounding = { sources: out.sources, searchQueries: out.searchQueries ?? [] };
@@ -1353,7 +1371,13 @@ export async function POST(req: Request) {
   // [03] TOKEN ACCOUNTING + COST AUDIT — cost-plus receipt from real usage.
   // Retrieval bills per REAL search at the answering provider's own rate
   // (Anthropic native $0.01, Google relay $0.035) — never an assumed count.
-  const receipt = buildReceipt(callSpec, usage, searchRequests);
+  // A provider DECLINE is priced by the provider's own refusal-billing rules:
+  // when it didn't bill us, the receipt is $0 and nothing is debited below.
+  const receipt = declined
+    ? buildDeclinedReceipt(callSpec, usage, refusalCategory)
+    : buildReceipt(callSpec, usage, searchRequests);
+  // Did the PROVIDER bill this call? Always, for an answered turn.
+  const providerBilled = receipt.refusal?.providerBilled ?? true;
   const tReceipt = Date.now();
 
   // [04] BIAS SCREEN — validated dual-head triage label (fail-open)
@@ -1365,7 +1389,14 @@ export async function POST(req: Request) {
   // means the answer ships uncharged with an honest label.
   let walletOut: { balanceUsd: number; insufficient?: boolean } | null = null;
   let debitDetail: string | null = null;
-  if (paid && wallet) {
+  if (paid && wallet && !providerBilled) {
+    // The provider declined and didn't bill the call, so there is no cost to
+    // pass through: no ledger call at all. walletOut stays null, so the client
+    // keeps the balance it already shows.
+    receipt.tier = "credits";
+    debitDetail = `NOT charged — ${callSpec.name} declined (category: ${refusalCategory ?? "none named"}) ` +
+      "before any output, which the provider does not bill";
+  } else if (paid && wallet) {
     const d = await debitWallet(
       wallet.id, wallet.token, receipt.totalUsd,
       `chat ${callSpec.id}${isGrounded ? "+grounded" : ""} ${usage.inputTokens}in/${usage.outputTokens}out`,
@@ -1437,6 +1468,10 @@ export async function POST(req: Request) {
     truncated,
     outputCap,
     declined,
+    // For a decline: the provider's category (null = none named) and whether the
+    // provider billed the call. providerBilled is true on every answered turn.
+    refusalCategory,
+    providerBilled,
     stages: [
       {
         label: "INTENT CHECK v1",
@@ -1478,7 +1513,7 @@ export async function POST(req: Request) {
           : "UNGROUNDED — answer generated from model training, not retrieved or verified",
         ms: 0,
       },
-      { label: "TOKEN ACCOUNTING + COST AUDIT", detail: `${usage.inputTokens} in / ${usage.outputTokens} out${isGrounded ? " + 1 grounded search" : ""}`, ms: tReceipt - tLlm },
+      { label: "TOKEN ACCOUNTING + COST AUDIT", detail: `${usage.inputTokens} in / ${usage.outputTokens} out${isGrounded ? " + 1 grounded search" : ""}${declined ? ` — provider decline (${refusalCategory ?? "no category"}), ${receipt.refusal?.usageLabel ?? ""}` : ""}`, ms: tReceipt - tLlm },
       {
         label: "BIAS SCREEN (validated v1)",
         detail: bias

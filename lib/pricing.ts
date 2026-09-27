@@ -470,6 +470,14 @@ export interface Receipt {
   totalUsd: number;      // (direct + grounding) × 1.20
   chargedUsd: number;    // 0 on the free tier; exact totalUsd when paid from credits
   tier: "free" | "credits";
+  // Present ONLY when the provider declined the turn (buildDeclinedReceipt).
+  // Absent on every answered turn, so those receipts — and their RECEIPT leaf —
+  // keep exactly the shape they had.
+  refusal?: {
+    category: string | null;  // stop_details.category as sent (null = no named category)
+    providerBilled: boolean;  // did the PROVIDER bill this call, per its published rules
+    usageLabel: string;       // what the usage counts on this receipt mean
+  };
 }
 
 const usd = (v: number) => Number(v.toFixed(9));
@@ -528,6 +536,71 @@ export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0, 
     totalUsd: usd(base + infra + support),
     chargedUsd: 0,
     tier: "free",
+  };
+}
+
+// ── Provider-declined turns (Anthropic refusals) ─────────────────────────
+//
+// Anthropic returns a safety decline as HTTP 200 with stop_reason "refusal",
+// empty content and token counts in usage — and whether IT bills that call
+// depends on the refusal category. Pinned from Anthropic's own page,
+// platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+// ("How refusals are billed" + the "Billed before any output" column),
+// read 2026-09-27:
+//   "a refusal that arrives before any output is billed when its
+//    stop_details.category is "bio", "frontier_llm", or "reasoning_extraction"
+//    ... A refusal before any output in any other category, or with a null
+//    category, is not billed."
+//   cyber No · bio Yes · frontier_llm Yes · reasoning_extraction Yes · general_harms No
+// Anthropic says "The billed categories may change" — that table is the source
+// of truth; re-check it and re-date this block on any change. A category NOT in
+// this list (including one added after this date) is treated as unbilled: if
+// that is wrong, the gate absorbs the cost instead of charging a visitor for a
+// refusal the provider may never have billed us for.
+//
+// A MID-OUTPUT refusal is billed differently: "A mid-stream refusal bills the
+// input tokens and the output already streamed at normal rates", in any
+// category. The gate doesn't stream, and the page doesn't say how a
+// non-streaming, no-fallback decline that fired mid-generation reports itself —
+// so a refusal counts as pre-output only when it carries zero output tokens.
+// Anything else is billed like any other call.
+export const BILLED_PREOUTPUT_REFUSAL_CATEGORIES: readonly string[] = ["bio", "frontier_llm", "reasoning_extraction"];
+
+export function providerBillsRefusal(category: string | null, outputTokens: number): boolean {
+  if (outputTokens > 0) return true; // declined after output began — billed at normal rates
+  return category !== null && BILLED_PREOUTPUT_REFUSAL_CATEGORIES.includes(category);
+}
+
+// The receipt for a turn the provider declined. When the provider billed it,
+// this is the ordinary cost-plus receipt. When it didn't, every dollar figure is
+// zero — there is no provider cost to pass through, so there is nothing to mark
+// up — while the reported token counts stay on the receipt, labeled as reported
+// rather than billed. Either way the `refusal` block says which case applied.
+export function buildDeclinedReceipt(spec: ModelSpec, usage: Usage, category: string | null, now: Date = new Date()): Receipt {
+  const providerBilled = providerBillsRefusal(category, usage.outputTokens);
+  const r = buildReceipt(spec, usage, 0, now);
+  if (providerBilled) {
+    return {
+      ...r,
+      refusal: {
+        category,
+        providerBilled,
+        usageLabel: usage.outputTokens > 0
+          ? "billed by provider — declined after output began (normal rates, any category)"
+          : "billed by provider — pre-output refusal in a billed category",
+      },
+    };
+  }
+  return {
+    ...r,
+    directUsd: 0,
+    groundingUsd: 0,
+    infraUsd: 0,
+    supportUsd: 0,
+    supportSplit: { server: 0, development: 0, steward: 0, reserve: 0 },
+    totalUsd: 0,
+    chargedUsd: 0,
+    refusal: { category, providerBilled, usageLabel: "reported, not billed by provider" },
   };
 }
 

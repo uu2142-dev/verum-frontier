@@ -50,6 +50,8 @@ interface Receipt {
   infraUsd: number; supportUsd: number;
   supportSplit: { server: number; development: number; steward: number; reserve: number };
   totalUsd: number; chargedUsd: number; tier: string;
+  // Only on a provider-declined turn — see buildDeclinedReceipt in lib/pricing.ts.
+  refusal?: { category: string | null; providerBilled: boolean; usageLabel: string };
 }
 interface GroundingSource { title: string; uri: string; }
 interface GroundingInfo { sources: GroundingSource[]; searchQueries: string[]; }
@@ -77,6 +79,8 @@ interface Exchange {
   attachmentMeta?: { name: string; chars: number } | null;
   truncated?: boolean;
   declined?: boolean; // provider refused; `response` is a gate note, not model output
+  refusalCategory?: string | null; // provider's stop_details.category on a decline
+  providerBilled?: boolean;        // did the provider bill the call (always true when answered)
   outputCap?: number;
   grounded?: boolean;
   groundingRequested?: boolean;
@@ -181,6 +185,13 @@ function buildSessionPayload(startedAt: string, exchanges: Exchange[], chainRoot
       truncated: ex.truncated ?? false,
       outputCap: ex.outputCap ?? null,
       declined: ex.declined ?? false,
+      // For a declined turn: the provider's refusal category, and whether the
+      // provider billed the call — when it didn't, the receipt reads $0 and
+      // nothing was debited. An answered turn is always provider-billed; a
+      // declined turn recorded before this field existed is null (not
+      // recorded), never guessed.
+      refusalCategory: ex.refusalCategory ?? null,
+      providerBilled: ex.providerBilled ?? (ex.declined ? null : true),
       seal: ex.seal,
       timingMs: ex.timingMs,
       sessionChainHash: ex.chainHash,
@@ -566,6 +577,9 @@ function GroundingProof({ onClose }: { onClose: () => void }) {
 }
 
 function ReceiptCard({ r, color }: { r: Receipt; color: string }) {
+  // A decline the provider didn't bill: the token counts are what it reported,
+  // not what anyone paid for, so they are shown without rates.
+  const unbilled = !!r.refusal && !r.refusal.providerBilled;
   return (
     <div style={{ fontFamily: "monospace", fontSize: 9, lineHeight: 1.9 }}>
       {/* Real heading, styled to look identical — the receipt/bias/seal panels
@@ -574,8 +588,20 @@ function ReceiptCard({ r, color }: { r: Receipt; color: string }) {
       <h3 style={{ color: "rgba(255,255,255,0.3)", letterSpacing: "0.2em", fontSize: 7, marginBottom: 4, margin: "0 0 4px", fontWeight: "inherit" }}>
         COST-PLUS RECEIPT · PRICE SHEET {r.priceSheetDate}
       </h3>
+      {r.refusal && (
+        <>
+          <Row
+            k="PROVIDER DECLINED"
+            v={`${r.refusal.category ?? "no category"} · ${r.refusal.providerBilled ? "BILLED BY PROVIDER" : "NOT BILLED BY PROVIDER"}`}
+            color="#c8941a"
+          />
+          <Sub k={r.refusal.usageLabel} />
+        </>
+      )}
       <Row k="DIRECT API COST" v={fmtUsd(r.directUsd)} strong color={color} />
-      {r.cachedInputTokens && r.cachedInputTokens > 0 ? (
+      {unbilled ? (
+        <Sub k={`${r.usage.inputTokens.toLocaleString()} in / ${r.usage.outputTokens.toLocaleString()} out — reported, not billed by provider`} />
+      ) : r.cachedInputTokens && r.cachedInputTokens > 0 ? (
         <>
           <Sub k={`${(r.uncachedInputTokens ?? r.usage.inputTokens).toLocaleString()} in (fresh) × $${fmtRate(r.rates.inPerM)}/M`} />
           {/* Groq now reports cache hits for GPT-OSS but the gate bills them at the
@@ -586,7 +612,7 @@ function ReceiptCard({ r, color }: { r: Receipt; color: string }) {
       ) : (
         <Sub k={`${r.usage.inputTokens.toLocaleString()} in × $${fmtRate(r.rates.inPerM)}/M`} />
       )}
-      <Sub k={`${r.usage.outputTokens.toLocaleString()} out × $${fmtRate(r.rates.outPerM)}/M`} />
+      {!unbilled && <Sub k={`${r.usage.outputTokens.toLocaleString()} out × $${fmtRate(r.rates.outPerM)}/M`} />}
       {!!r.groundingUsd && r.groundingUsd > 0 && (
         <>
           <Row k="RETRIEVAL (web search)" v={fmtUsd(r.groundingUsd)} color="#58a6ff" />
@@ -1074,6 +1100,8 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
         attachmentMeta: data.attachmentMeta ?? null,
         truncated: data.truncated ?? false,
         declined: data.declined ?? false,
+        refusalCategory: data.refusalCategory ?? null,
+        providerBilled: data.providerBilled,
         outputCap: data.outputCap,
         grounded: data.grounded ?? false,
         groundingRequested: data.groundingRequested ?? false,
@@ -1512,8 +1540,8 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
                         letterSpacing: "0.08em", padding: 0, textAlign: "left",
                       }}
                     >
-                      🧾 {ex.receipt.usage.inputTokens.toLocaleString()} in / {ex.receipt.usage.outputTokens.toLocaleString()} out
-                      · cost {fmtUsd(ex.receipt.totalUsd)} · charged {fmtUsd(ex.receipt.chargedUsd)}{" · "}
+                      🧾 {ex.receipt.usage.inputTokens.toLocaleString()} in / {ex.receipt.usage.outputTokens.toLocaleString()} out{" "}
+                      {ex.receipt.refusal && !ex.receipt.refusal.providerBilled ? "(reported, not billed by provider) " : ""}· cost {fmtUsd(ex.receipt.totalUsd)} · charged {fmtUsd(ex.receipt.chargedUsd)}{" · "}
                       {ex.bias ? `bias tox p${ex.bias.toxicityPctile} / frame p${ex.bias.framingPctile}` : "bias n/a"}{" · seal "}
                       {ex.seal.root.slice(0, 10)}… {open ? "▲" : "▼"}
                     </button>
