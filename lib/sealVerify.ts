@@ -26,7 +26,7 @@
 // a session sealed while it was live would otherwise fail its TIMING leaf here
 // (the lookup falls back to the display id, which is not what was hashed) and a
 // genuine record would read as tampered.
-const PROVIDER_MODEL: Record<string, string> = {
+export const PROVIDER_MODEL: Record<string, string> = {
   // Free council, live as of 2026-09-25
   "gpt-oss-120b": "openai/gpt-oss-120b",
   "gpt-oss-20b": "openai/gpt-oss-20b",

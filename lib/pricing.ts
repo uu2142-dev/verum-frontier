@@ -308,8 +308,13 @@ export const PREMIUM_MODELS: readonly ModelSpec[] = [
     // 2026-09-27 from platform.claude.com/docs/en/about-claude/pricing: $4 input,
     // $5 5-minute cache writes (1.25×), $0.20 cache hits, $20 output per MTok —
     // footnote: "Cache hits and refreshes on Claude Opus 5.5 are priced at 0.05x
-    // the base input price." It always thinks, so effort is pinned: "high", for
-    // the deep-dive work the premium tier is for (the API default is "medium").
+    // the base input price." It always thinks, so effort is pinned — to
+    // "medium", its API default, on Anthropic's own evidence for this model: at
+    // medium it "produced better long analytical deliverables than Claude Opus 5
+    // at high with roughly 40% fewer output tokens", and at a given level it
+    // thinks more per turn than Opus 5. Under the gate's hard 8,192-token cap
+    // (thinking + answer share it), "high" risks deep dives that truncate or
+    // come back empty. Revisit with receipts: CAP HIT rate per model × effort.
     id: "claude-opus-5.5",
     providerModel: "claude-opus-5-5",
     provider: "anthropic",
@@ -319,8 +324,8 @@ export const PREMIUM_MODELS: readonly ModelSpec[] = [
     inPerM: 4,
     outPerM: 20,
     cacheReadMultiplier: 0.05,
-    effort: "high",
-    note: "Newest Opus · always-on reasoning (effort high) for deep dives · credits only · native web-search $0.01/search",
+    effort: "medium",
+    note: "Newest Opus · always-on reasoning (effort medium) for deep dives · credits only · native web-search $0.01/search",
     tier: "premium",
   },
   {
@@ -459,6 +464,10 @@ export interface RetiredModel {
   retiredOn: string;    // day the gate stopped offering it (ISO date)
   why: string;
   lastRates?: { inPerM: number; outPerM: number }; // last pinned rate, for the record (when known)
+  // The live model that took this one's seat, when there is a like-for-like
+  // successor. A saved pick of the retired id then moves to it — with a notice —
+  // instead of silently falling back to the free default.
+  successorId?: string;
 }
 
 export const RETIRED_MODELS: readonly RetiredModel[] = [
@@ -504,6 +513,7 @@ export const RETIRED_MODELS: readonly RetiredModel[] = [
     retiredOn: "2026-09-27",
     why: "replaced on the gate by Claude Fable 5.1 at the same $10/$50 rate; Anthropic still serves Fable 5 as a Legacy model",
     lastRates: { inPerM: 10, outPerM: 50 },
+    successorId: "claude-fable-5.1",
   },
 ] as const;
 

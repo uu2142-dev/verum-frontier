@@ -21,7 +21,7 @@ interface ModelInfo {
 }
 // A model the gate once served and has retired (boot list `retiredModels`):
 // display metadata only, so a restored exchange still shows who answered it.
-interface RetiredInfo { id: string; name: string; family: string; color: string; retiredOn: string; }
+interface RetiredInfo { id: string; name: string; family: string; color: string; retiredOn: string; successorId?: string; }
 interface Quota { used: number; limit: number; resetsAtUtc: string; }
 
 // Per-million rates as the provider publishes them. toFixed(2) printed GPT-OSS
@@ -797,6 +797,8 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
   // Collapsed into a single current-model pill that opens a select tray; the
   // primary controls (GROUND IT, ALICE routing) stay inline.
   const [modelTrayOpen, setModelTrayOpen] = useState(false);
+  // Set when a saved pick named a retired model and was moved to its successor.
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
   const [buying, setBuying] = useState(false);
   const [claimNote, setClaimNote] = useState<string | null>(null);
   const [routerMode, setRouterMode] = useState<RouterMode>(null);
@@ -892,10 +894,22 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
         setModels(d.models);
         if (Array.isArray(d.retiredModels)) setRetiredModels(d.retiredModels);
         // Honour a pick made in the Models tab, if it still exists in the boot list.
+        // A pick of a retired model with a like-for-like successor moves to that
+        // successor — said out loud — rather than silently to the free default.
         let initial = d.models[0].id;
         try {
           const saved = localStorage.getItem(MODEL_KEY);
-          if (saved && d.models.some((m: ModelInfo) => m.id === saved)) initial = saved;
+          if (saved && d.models.some((m: ModelInfo) => m.id === saved)) {
+            initial = saved;
+          } else if (saved && Array.isArray(d.retiredModels)) {
+            const gone = (d.retiredModels as RetiredInfo[]).find(r => r.id === saved);
+            const next = gone?.successorId ? (d.models as ModelInfo[]).find(m => m.id === gone.successorId) : undefined;
+            if (gone && next) {
+              initial = next.id;
+              localStorage.setItem(MODEL_KEY, next.id);
+              setModelNotice(`${gone.name} was retired from the gate on ${gone.retiredOn}. Your saved pick now uses ${next.name}.`);
+            }
+          }
         } catch { /* ignore */ }
         setModelId(initial);
         setQuota(d.quota ?? null);
@@ -1719,6 +1733,20 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
             );
           })()}
         </div>
+
+        {modelNotice && (
+          <div role="status" style={{
+            border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.04)",
+            padding: "6px 10px", marginBottom: 8, fontFamily: "monospace", fontSize: 9,
+            color: "rgba(255,255,255,0.75)", display: "flex", gap: 8, alignItems: "baseline",
+          }}>
+            <span style={{ flex: 1 }}>{modelNotice}</span>
+            <button onClick={() => setModelNotice(null)} aria-label="Dismiss notice"
+              style={{ background: "transparent", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", fontFamily: "monospace", fontSize: 9 }}>
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* GROUND IT override warning. A silent model substitution is exactly
             what a provenance product must never do — if your pick is about to be

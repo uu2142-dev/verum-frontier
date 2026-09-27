@@ -1018,6 +1018,7 @@ export async function GET(req: Request) {
     // who answered an exchange sealed under a retired id.
     retiredModels: RETIRED_MODELS.map(m => ({
       id: m.id, name: m.name, family: m.family, color: m.color, retiredOn: m.retiredOn,
+      ...(m.successorId ? { successorId: m.successorId } : {}),
     })),
     quota: { used: q.n, limit: FREE_DAILY_LIMIT, resetsAtUtc: quotaResetIso() },
     payments: { enabled: stripeConfigured(), testMode: stripeTestMode() },
@@ -1070,6 +1071,7 @@ export async function POST(req: Request) {
           error: `${retired.name} was retired from the gate on ${retired.retiredOn} (${retired.why}). ` +
             "Pick another model. Sessions already sealed with it still verify.",
           retired: true,
+          ...(retired.successorId ? { successorId: retired.successorId } : {}),
         },
         { status: 410 },
       );
@@ -1114,16 +1116,54 @@ export async function POST(req: Request) {
   // of undisclosed state change this gate exists to make visible.
   // The free council keeps the smaller budget: Groq's free plan caps tokens per
   // minute, and a longer history would push long free threads into 429s.
+  //
+  // A premium answer (8,192-token cap) can be longer than a free model's whole
+  // budget, so dropping whole turns would delete the very answer a user asks a
+  // free model to continue or critique. The latest exchange — the last answer
+  // and the question that produced it — is therefore never dropped: if it still
+  // does not fit, the answer is shortened in the middle, head and tail kept,
+  // behind a marker that says the gate cut it (so no model mistakes it for text
+  // the earlier model wrote). Keeping that question also keeps the history
+  // opening on a user turn, which providers expect.
   const historyBudget = spec.tier === "premium" ? MAX_HISTORY_CHARS_PREMIUM : MAX_HISTORY_CHARS;
+  const historyChars = () => messages.reduce((s, m) => s + m.content.length, 0);
+  const lastAnswerAt = messages.length >= 2 && messages[messages.length - 2].role === "assistant"
+    ? messages.length - 2 : -1;
+  const protectFrom = lastAnswerAt < 0
+    ? messages.length - 1
+    : lastAnswerAt > 0 && messages[lastAnswerAt - 1].role === "user" ? lastAnswerAt - 1 : lastAnswerAt;
   let historyTrimmed = 0;
-  while (
-    messages.length > 1 &&
-    messages.reduce((s, m) => s + m.content.length, 0) > historyBudget
-  ) {
+  let droppable = protectFrom;
+  while (droppable > 0 && historyChars() > historyBudget) {
+    messages.shift();
+    historyTrimmed += 1;
+    droppable -= 1;
+  }
+  let answerShortenedBy = 0;
+  if (historyChars() > historyBudget && lastAnswerAt >= 0) {
+    const answerIdx = messages.length - 2;
+    const answer = messages[answerIdx].content;
+    const marker = (n: number) =>
+      `\n\n[… ${n.toLocaleString()} characters of this earlier answer were cut by the gate to fit ` +
+      `${spec.name}'s history budget; the start and end are kept …]\n\n`;
+    const room = historyBudget - (historyChars() - answer.length) - marker(answer.length).length;
+    if (room >= 2000) {
+      const head = Math.floor(room / 3);
+      const tail = room - head;
+      answerShortenedBy = answer.length - head - tail;
+      messages[answerIdx] = {
+        ...messages[answerIdx],
+        content: answer.slice(0, head) + marker(answerShortenedBy) + answer.slice(answer.length - tail),
+      };
+    }
+  }
+  while (messages.length > 1 && historyChars() > historyBudget) {
+    // Last resort (not reachable with MAX_INPUT_CHARS well under every budget):
+    // the old behaviour, oldest first.
     messages.shift();
     historyTrimmed += 1;
   }
-  if (messages.reduce((s, m) => s + m.content.length, 0) > historyBudget) {
+  if (historyChars() > historyBudget) {
     // Only reachable if the new query alone exceeds the cap, which MAX_INPUT_CHARS
     // already prevents — kept so the limit can never be silently exceeded.
     return NextResponse.json({ error: "Query too long for this conversation." }, { status: 400 });
@@ -1496,9 +1536,13 @@ export async function POST(req: Request) {
         label: "INTENT CHECK v1",
         // Say it when history was cut. The model saw less than the transcript
         // shows, and that is a state change the reader is entitled to.
-        detail: historyTrimmed
-          ? `format + length validation · ${historyTrimmed} older turn${historyTrimmed === 1 ? "" : "s"} trimmed to fit the context budget`
-          : "format + length validation",
+        detail: "format + length validation" +
+          (historyTrimmed
+            ? ` · ${historyTrimmed} older turn${historyTrimmed === 1 ? "" : "s"} trimmed to fit the context budget`
+            : "") +
+          (answerShortenedBy
+            ? ` · the previous answer was shortened by ${answerShortenedBy.toLocaleString()} characters (start and end kept) to fit ${spec.name}'s history budget`
+            : ""),
         ms: tIntent - t0,
       },
       ...(routing ? [{
