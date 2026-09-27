@@ -34,6 +34,9 @@
 //     the $0.30/$0.40 pinned 07-12 came from stale secondary sources.)
 //   • Premium council per-token rates — 2026-07-23; Claude Sonnet 5 and GPT-5.6 Sol
 //     corrected 2026-09-25 from the providers' own pages (see PREMIUM_MODELS below).
+//     Claude Opus 5.5 added and Claude Fable 5 superseded by Claude Fable 5.1 on
+//     2026-09-27 — every Anthropic row re-read that day from the model pricing
+//     table at platform.claude.com/docs/en/about-claude/pricing.
 //   • Per-search retrieval rates — 2026-07-23/24 (searchUnitUsd).
 //   • Cache-read multipliers — 2026-07-24 (cacheMultiplier), reconciled live
 //     against the xAI console.
@@ -46,7 +49,10 @@
 // corrections (Sonnet 5 stays $2/$10 — the scheduled step was cancelled; GPT-5.6
 // Sol $4/$20 promotional). Receipts sealed before this date keep the date and
 // rates they were sealed with; nothing sealed is rewritten.
-export const PRICE_SHEET_DATE = "2026-09-25";
+// 2026-09-27: Claude Opus 5.5 added ($4/$20), Claude Fable 5.1 replaces Fable 5
+// (same $10/$50), and cache-read rates became per-model for Anthropic (Opus 5.5
+// 0.05×, Fable 5.1 0.025× — see ModelSpec.cacheReadMultiplier).
+export const PRICE_SHEET_DATE = "2026-09-27";
 
 // Google Search grounding surcharge — Google bills grounded requests separately
 // from tokens ($35 / 1,000 requests = $0.035/request, pinned from
@@ -101,8 +107,11 @@ export function searchUnitUsd(provider: Provider): number {
 // provider's own pricing page (2026-07-24):
 //   OpenAI  cached $0.50/M vs $5/M input = 0.10×
 //   xAI     cached $0.30/M vs $2/M input = 0.15×
-//   Anthropic cache-read = 0.10× (moot — we send no cache_control, so nothing
-//             caches; wired anyway for correctness if that changes)
+//   Anthropic cache-read = 0.10× on most models, but NOT all: Opus 5.5 is 0.05×
+//             and Fable 5.1 0.025×, so those carry ModelSpec.cacheReadMultiplier,
+//             which wins over this provider default. (Moot today — we send no
+//             cache_control, so nothing caches; wired so it stays right if that
+//             changes.)
 //   Google  Gemini context cache ≈ 0.25×
 //   Groq    no prompt caching → 1.0× (cached count is always 0 anyway)
 // Writing a prompt into the cache costs MORE than not caching at all: 1.25× the
@@ -156,6 +165,14 @@ export interface ModelSpec {
   // announced $3/$15 step, was cancelled by Anthropic (see PREMIUM_MODELS). Only set
   // it from a step the provider's OWN page still announces on the day you pin it.
   scheduledRate?: { from: string; inPerM: number; outPerM: number };
+  // Cache-read price as a fraction of inPerM, when this model's differs from its
+  // provider's default in cacheMultiplier(). Pin it from the provider's own page.
+  cacheReadMultiplier?: number;
+  // Anthropic output_config.effort, sent on every call when set. On models that
+  // always think (Opus 5.5, Fable 5.1) effort is the ONLY control over how much
+  // they reason — and reasoning is billed as output — so it is pinned here, in
+  // one visible place, rather than left to a provider default that can move.
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
 }
 
 // The rates in force for a spec at a given moment. If a scheduledRate has come
@@ -257,16 +274,24 @@ export const MODEL_REGISTRY: readonly ModelSpec[] = [
 //
 // Adapter gotchas (verified against Anthropic's own API reference — these are
 // 400s, not style notes, and callGemini's current shape would trip two of them):
-//   • NO temperature / top_p / top_k. Removed on Opus 4.8, Sonnet 5, Fable 5 —
-//     sending any of them returns 400. Steer with the prompt instead.
+//   • NO temperature / top_p / top_k. Removed on Opus 4.8, Opus 5.5, Sonnet 5 and
+//     the Fable models — sending any of them returns 400. Steer with the prompt.
 //   • Thinking is per-model: Opus 4.8 runs WITHOUT thinking unless you send
 //     thinking:{type:"adaptive"} explicitly; Sonnet 5 runs adaptive by default;
-//     Fable 5 is always-on and REJECTS any thinking config (omit the field).
-//     The old {type:"enabled",budget_tokens:N} is gone everywhere — 400.
-//   • Depth is output_config:{effort:"low|medium|high|xhigh|max"}, not tokens.
-//   • Fable 5 also: requires 30-day data retention (400 under ZDR), and can
-//     return HTTP 200 with stop_reason:"refusal" — check stop_reason BEFORE
-//     reading content[0], or the gate throws on a refusal.
+//     Opus 5.5 and Fable 5.1 ALWAYS think and REJECT {type:"disabled"} (omit the
+//     field). The old {type:"enabled",budget_tokens:N} is gone everywhere — 400.
+//   • Depth is output_config:{effort:"low|medium|high|xhigh|max"}, not tokens —
+//     pinned per model in ModelSpec.effort. Opus 5.5 defaults to "medium" when
+//     it is omitted, one level below the other Opus models.
+//   • Thinking tokens count against max_tokens even though their text is never
+//     returned, so an always-thinking model needs cap room for thinking + reply
+//     (MAX_OUTPUT_TOKENS_PREMIUM in route.ts).
+//   • Opus 5.5 and Fable 5.1 return 400 on forced tool_choice (any/tool). The
+//     gate never sends tool_choice, and never replays thinking blocks, so the
+//     "preserved thinking" history checks cannot fire here.
+//   • Fable 5.1 requires 30-day data retention (400 under ZDR), and every model
+//     here can return HTTP 200 with stop_reason:"refusal" — check stop_reason
+//     BEFORE reading content[0], or the gate throws on a refusal.
 //   • Stream anything over ~16k max_tokens or the request hits HTTP timeout.
 //
 // Grounding a Claude tier later: Anthropic's native web search is a server tool
@@ -279,6 +304,30 @@ export const MODEL_REGISTRY: readonly ModelSpec[] = [
 // not a bug.
 export const PREMIUM_MODELS: readonly ModelSpec[] = [
   {
+    // Released 2026-09-22; Anthropic's recommended default model. Rates read
+    // 2026-09-27 from platform.claude.com/docs/en/about-claude/pricing: $4 input,
+    // $5 5-minute cache writes (1.25×), $0.20 cache hits, $20 output per MTok —
+    // footnote: "Cache hits and refreshes on Claude Opus 5.5 are priced at 0.05x
+    // the base input price." It always thinks, so effort is pinned: "high", for
+    // the deep-dive work the premium tier is for (the API default is "medium").
+    id: "claude-opus-5.5",
+    providerModel: "claude-opus-5-5",
+    provider: "anthropic",
+    name: "Claude Opus 5.5",
+    family: "Anthropic",
+    color: "#f08a5d",
+    inPerM: 4,
+    outPerM: 20,
+    cacheReadMultiplier: 0.05,
+    effort: "high",
+    note: "Newest Opus · always-on reasoning (effort high) for deep dives · credits only · native web-search $0.01/search",
+    tier: "premium",
+  },
+  {
+    // Anthropic lists Opus 4.8 as Legacy since Opus 5.5, but kept here on
+    // purpose: Opus 5.5 ships stricter cybersecurity classifiers, and Anthropic
+    // says most cybersecurity tasks get routed to Opus 4.8 — the security and
+    // OSINT deep dives this gate is used for. Runs without thinking (field omitted).
     id: "claude-opus-4.8",
     providerModel: "claude-opus-4-8",
     provider: "anthropic",
@@ -287,7 +336,7 @@ export const PREMIUM_MODELS: readonly ModelSpec[] = [
     color: "#d97757",
     inPerM: 5,
     outPerM: 25,
-    note: "Frontier reasoning · credits only · native web-search grounding $0.01/search",
+    note: "Frontier reasoning, no thinking · Anthropic's route for most cybersecurity work · credits only · native web-search $0.01/search",
     tier: "premium",
   },
   {
@@ -323,15 +372,23 @@ export const PREMIUM_MODELS: readonly ModelSpec[] = [
     tier: "premium",
   },
   {
-    id: "claude-fable-5",
-    providerModel: "claude-fable-5",
+    // Successor to Claude Fable 5 (GA 2026-09-01), which it replaces on the gate
+    // at the same price. Rates read 2026-09-27 from platform.claude.com/docs/en/
+    // about-claude/pricing: $10 input, $12.50 5-minute cache writes (1.25×), $0.25
+    // cache hits, $50 output per MTok — footnote: "Cache hits and refreshes on
+    // Claude Fable 5.1 and Claude Mythos 5.1 are priced at 0.025x the base input
+    // price." Effort "high" is also the API default; pinned so it cannot drift.
+    id: "claude-fable-5.1",
+    providerModel: "claude-fable-5-1",
     provider: "anthropic",
-    name: "Claude Fable 5",
+    name: "Claude Fable 5.1",
     family: "Anthropic",
     color: "#e0b354",
     inPerM: 10,
     outPerM: 50,
-    note: "Most capable · always-on reasoning · credits only",
+    cacheReadMultiplier: 0.025,
+    effort: "high",
+    note: "Most capable · always-on reasoning (effort high) · credits only · native web-search $0.01/search",
     tier: "premium",
   },
   {
@@ -382,7 +439,9 @@ export function getModel(id: string): ModelSpec | undefined {
 }
 
 // ── RETIRED — sealed history only, never selectable ─────────────────────────
-// Models the gate once served and its provider has since withdrawn. They are
+// Models the gate once served and no longer offers — because the provider
+// withdrew them, or because the gate replaced them with a successor (the `why`
+// says which, and never claims a withdrawal that did not happen). They are
 // deliberately NOT in ALL_MODELS, so getModel() refuses them and nothing can be
 // billed to them again. They stay listed so that everything already SEALED under
 // their ids keeps its meaning: the boot list returns them as `retiredModels` so a
@@ -433,6 +492,18 @@ export const RETIRED_MODELS: readonly RetiredModel[] = [
     retiredOn: "2026-09-25",
     why: "Groq's on-demand API returns 404 model_not_found; succeeded by qwen/qwen3.8-27b",
     lastRates: { inPerM: 0.60, outPerM: 3.00 },
+  },
+  {
+    // NOT withdrawn by Anthropic — Fable 5 is still served (listed Legacy). The
+    // gate replaced it with its successor at the same price, so the seat moved.
+    id: "claude-fable-5",
+    providerModel: "claude-fable-5",
+    name: "Claude Fable 5",
+    family: "Anthropic",
+    color: "#e0b354",
+    retiredOn: "2026-09-27",
+    why: "replaced on the gate by Claude Fable 5.1 at the same $10/$50 rate; Anthropic still serves Fable 5 as a Legacy model",
+    lastRates: { inPerM: 10, outPerM: 50 },
   },
 ] as const;
 
@@ -505,7 +576,7 @@ export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0, 
   const cached = Math.max(0, Math.min(usage.cachedInputTokens ?? 0, usage.inputTokens));
   const written = Math.max(0, Math.min(usage.cacheWriteTokens ?? 0, usage.inputTokens - cached));
   const uncached = usage.inputTokens - cached - written;
-  const cacheRatePerM = usd(inPerM * cacheMultiplier(spec.provider));
+  const cacheRatePerM = usd(inPerM * (spec.cacheReadMultiplier ?? cacheMultiplier(spec.provider)));
   const cacheWriteRatePerM = usd(inPerM * CACHE_WRITE_MULTIPLIER);
   const direct = usd(
     (uncached / 1_000_000) * inPerM +

@@ -44,7 +44,9 @@ const PROVIDER_MODEL: Record<string, string> = {
   "claude-opus-4.8": "claude-opus-4-8",
   "claude-sonnet-5": "claude-sonnet-5",
   "claude-haiku-4.5": "claude-haiku-4-5",
-  "claude-fable-5": "claude-fable-5",
+  "claude-fable-5": "claude-fable-5", // retired from the gate 2026-09-27 (replaced by Fable 5.1)
+  "claude-opus-5.5": "claude-opus-5-5",   // added 2026-09-27
+  "claude-fable-5.1": "claude-fable-5-1", // added 2026-09-27
   "gpt-5.6-sol": "gpt-5.6-sol",
   "grok-4.5": "grok-4.5",
 };

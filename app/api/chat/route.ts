@@ -54,9 +54,19 @@ const MAX_INPUT_CHARS = 4000;
 // The old 12,000 was under that floor, so the affordance was unreachable on the
 // paid tier by arithmetic. Older turns beyond this are trimmed, not refused.
 const MAX_HISTORY_CHARS = 24000;
+// Premium models share ONE cap, so a deep dive that moves between them keeps the
+// same answer room and the same history budget. It is double the free-council
+// paid cap because Opus 5.5 and Fable 5.1 always think, and thinking counts
+// against max_tokens. Why not the models' own 128K ceiling: the gate returns a
+// whole answer inside Vercel's 300s function limit (PROVIDER_TIMEOUT_MS), and an
+// answer that long cannot finish in time — "continue" carries longer work.
+// The history budget follows the same rule as MAX_HISTORY_CHARS: one full capped
+// answer (~32k chars) plus MAX_INPUT_CHARS, with headroom.
+const MAX_HISTORY_CHARS_PREMIUM = 40000;
 const MAX_HISTORY_MESSAGES = 20;
 const MAX_OUTPUT_TOKENS_FREE = 1024;
 const MAX_OUTPUT_TOKENS_PAID = 4096; // paying customers get room; cost-plus bills it honestly
+const MAX_OUTPUT_TOKENS_PREMIUM = 8192;
 const MAX_ATTACH_CHARS = 24_000; // attached text rides ONE turn; its cost shows on the receipt
 const GROUNDING_MODEL_ID = "gemini-2.5-flash"; // only Gemini has built-in Google Search grounding
 
@@ -554,8 +564,9 @@ async function callAnthropic(
     // ADDITIVE — the model you picked stays the model that answers. No relay,
     // no second-hand synthesis, and the citations are first-hand.
     // Dynamic-filtering variant needs Opus 4.6+/Sonnet 4.6+; Haiku 4.5 is
-    // older-generation and takes the basic tool. (Fable 5 is newer than the
-    // cutoff so it gets the new variant — confirm on its first live call.)
+    // older-generation and takes the basic tool. (Opus 5.5 and Fable 5.1 get the
+    // new variant under Anthropic's "Claude 4.6 and later" rule — no per-model
+    // table names them, so confirm on each one's first live grounded call.)
     body.tools = [{
       type: spec.providerModel === "claude-haiku-4-5" ? "web_search_20250305" : "web_search_20260209",
       name: "web_search",
@@ -564,8 +575,10 @@ async function callAnthropic(
   // Sonnet 5 runs adaptive thinking BY DEFAULT — for chat we want predictable,
   // cheap, honestly-priced receipts, so turn it off explicitly (accepted there).
   // Opus 4.8 and Haiku 4.5 run without thinking when the field is omitted.
-  // Fable 5 is always-on and REJECTS any thinking config — never send it one.
+  // Opus 5.5 and Fable 5.1 ALWAYS think and return 400 on {type:"disabled"} —
+  // never send them a thinking config; their effort (below) sets the depth.
   if (spec.providerModel === "claude-sonnet-5") body.thinking = { type: "disabled" };
+  if (spec.effort) body.output_config = { effort: spec.effort };
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -1092,21 +1105,25 @@ export async function POST(req: Request) {
   // "continue", and continuing requires the truncated answer to still be in
   // history. At the paid cap of 4,096 output tokens that answer is ~16k chars
   // on its own, so "continue" was rejected before the model ever saw it — the
-  // failure landing only on the tier that pays for the bigger cap.
+  // failure landing only on the tier that pays for the bigger cap. (Premium
+  // models answer to 8,192 tokens, hence their larger historyBudget below.)
   //
   // Now the OLDEST turns are dropped until it fits, which preserves the most
   // recent exchange (the thing being continued). Trimming is reported rather
   // than silent: quietly changing what the model was shown is exactly the kind
   // of undisclosed state change this gate exists to make visible.
+  // The free council keeps the smaller budget: Groq's free plan caps tokens per
+  // minute, and a longer history would push long free threads into 429s.
+  const historyBudget = spec.tier === "premium" ? MAX_HISTORY_CHARS_PREMIUM : MAX_HISTORY_CHARS;
   let historyTrimmed = 0;
   while (
     messages.length > 1 &&
-    messages.reduce((s, m) => s + m.content.length, 0) > MAX_HISTORY_CHARS
+    messages.reduce((s, m) => s + m.content.length, 0) > historyBudget
   ) {
     messages.shift();
     historyTrimmed += 1;
   }
-  if (messages.reduce((s, m) => s + m.content.length, 0) > MAX_HISTORY_CHARS) {
+  if (messages.reduce((s, m) => s + m.content.length, 0) > historyBudget) {
     // Only reachable if the new query alone exceeds the cap, which MAX_INPUT_CHARS
     // already prevents — kept so the limit can never be silently exceeded.
     return NextResponse.json({ error: "Query too long for this conversation." }, { status: 400 });
@@ -1262,7 +1279,9 @@ export async function POST(req: Request) {
   // [03] LLM CALL — the real thing. Paying customers get 4x the answer room;
   // cost-plus bills the extra tokens honestly either way. GROUND IT routes to
   // Gemini + Google Search and returns cited sources.
-  const outputCap = paid ? MAX_OUTPUT_TOKENS_PAID : MAX_OUTPUT_TOKENS_FREE;
+  const outputCap = !paid
+    ? MAX_OUTPUT_TOKENS_FREE
+    : callSpec.tier === "premium" ? MAX_OUTPUT_TOKENS_PREMIUM : MAX_OUTPUT_TOKENS_PAID;
   let text: string, usage: Usage, truncated = false;
   // Set when the PROVIDER declined and the gate substituted its own note, so the
   // client and the sealed export can say that the text is ours, not the model's.
@@ -1501,7 +1520,7 @@ export async function POST(req: Request) {
           : "no relevant memories recalled",
         ms: tMem - tIntent,
       },
-      { label: `LLM CALL — ${callSpec.name}${isGrounded ? " (grounded)" : ""}`, detail: `${callSpec.providerModel} via ${callSpec.provider}${groundingRequested && callSpec.id !== spec.id ? ` (GROUND IT overrode ${spec.name})` : ""} · output cap ${outputCap.toLocaleString()}${truncated ? " — CAP HIT, answer truncated" : ""}${retriedAfter ? ` · retried once after provider HTTP ${retriedAfter}` : ""}`, ms: tLlm - tMem },
+      { label: `LLM CALL — ${callSpec.name}${isGrounded ? " (grounded)" : ""}`, detail: `${callSpec.providerModel} via ${callSpec.provider}${groundingRequested && callSpec.id !== spec.id ? ` (GROUND IT overrode ${spec.name})` : ""} · output cap ${outputCap.toLocaleString()}${callSpec.effort ? ` · effort ${callSpec.effort}` : ""}${truncated ? " — CAP HIT, answer truncated" : ""}${retriedAfter ? ` · retried once after provider HTTP ${retriedAfter}` : ""}`, ms: tLlm - tMem },
       {
         label: isGrounded && !useRelay ? "GROUNDING — NATIVE (first-hand)" : "GROUNDING",
         detail: isGrounded
