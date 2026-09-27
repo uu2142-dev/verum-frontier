@@ -475,6 +475,7 @@ export interface Receipt {
   // keep exactly the shape they had.
   refusal?: {
     category: string | null;  // stop_details.category as sent (null = no named category)
+    preOutput: boolean;       // declined before any output (empty content)
     providerBilled: boolean;  // did the PROVIDER bill this call, per its published rules
     usageLabel: string;       // what the usage counts on this receipt mean
   };
@@ -560,14 +561,17 @@ export function buildReceipt(spec: ModelSpec, usage: Usage, searchRequests = 0, 
 //
 // A MID-OUTPUT refusal is billed differently: "A mid-stream refusal bills the
 // input tokens and the output already streamed at normal rates", in any
-// category. The gate doesn't stream, and the page doesn't say how a
-// non-streaming, no-fallback decline that fired mid-generation reports itself —
-// so a refusal counts as pre-output only when it carries zero output tokens.
-// Anything else is billed like any other call.
+// category. The gate doesn't stream. The marker the page gives for a pre-output
+// refusal is that `content` is empty, so that is the test: a decline counts as
+// mid-output only when partial output is actually present in `content`.
+// output_tokens is deliberately NOT the test — every Fable 5 decline in the
+// credits ledger (seq 68, 79, 80; 2026-08-02/08) reports 3–7 output tokens, and
+// the page says nothing about what those count. If that reading is wrong, the
+// gate absorbs a few output tokens rather than billing a visitor for a refusal.
 export const BILLED_PREOUTPUT_REFUSAL_CATEGORIES: readonly string[] = ["bio", "frontier_llm", "reasoning_extraction"];
 
-export function providerBillsRefusal(category: string | null, outputTokens: number): boolean {
-  if (outputTokens > 0) return true; // declined after output began — billed at normal rates
+export function providerBillsRefusal(category: string | null, preOutput: boolean): boolean {
+  if (!preOutput) return true; // declined after output began — billed at normal rates
   return category !== null && BILLED_PREOUTPUT_REFUSAL_CATEGORIES.includes(category);
 }
 
@@ -576,18 +580,21 @@ export function providerBillsRefusal(category: string | null, outputTokens: numb
 // zero — there is no provider cost to pass through, so there is nothing to mark
 // up — while the reported token counts stay on the receipt, labeled as reported
 // rather than billed. Either way the `refusal` block says which case applied.
-export function buildDeclinedReceipt(spec: ModelSpec, usage: Usage, category: string | null, now: Date = new Date()): Receipt {
-  const providerBilled = providerBillsRefusal(category, usage.outputTokens);
+export function buildDeclinedReceipt(
+  spec: ModelSpec, usage: Usage, category: string | null, preOutput: boolean, now: Date = new Date(),
+): Receipt {
+  const providerBilled = providerBillsRefusal(category, preOutput);
   const r = buildReceipt(spec, usage, 0, now);
   if (providerBilled) {
     return {
       ...r,
       refusal: {
         category,
+        preOutput,
         providerBilled,
-        usageLabel: usage.outputTokens > 0
-          ? "billed by provider — declined after output began (normal rates, any category)"
-          : "billed by provider — pre-output refusal in a billed category",
+        usageLabel: preOutput
+          ? "billed by provider — pre-output refusal in a billed category"
+          : "billed by provider — declined after output began (normal rates, any category)",
       },
     };
   }
@@ -600,7 +607,7 @@ export function buildDeclinedReceipt(spec: ModelSpec, usage: Usage, category: st
     supportSplit: { server: 0, development: 0, steward: 0, reserve: 0 },
     totalUsd: 0,
     chargedUsd: 0,
-    refusal: { category, providerBilled, usageLabel: "reported, not billed by provider" },
+    refusal: { category, preOutput, providerBilled, usageLabel: "reported, not billed by provider" },
   };
 }
 

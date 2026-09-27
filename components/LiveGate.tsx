@@ -51,7 +51,7 @@ interface Receipt {
   supportSplit: { server: number; development: number; steward: number; reserve: number };
   totalUsd: number; chargedUsd: number; tier: string;
   // Only on a provider-declined turn — see buildDeclinedReceipt in lib/pricing.ts.
-  refusal?: { category: string | null; providerBilled: boolean; usageLabel: string };
+  refusal?: { category: string | null; preOutput: boolean; providerBilled: boolean; usageLabel: string };
 }
 interface GroundingSource { title: string; uri: string; }
 interface GroundingInfo { sources: GroundingSource[]; searchQueries: string[]; }

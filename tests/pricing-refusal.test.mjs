@@ -4,7 +4,8 @@
 // Billing rule under test, pinned in lib/pricing.ts from
 // platform.claude.com/docs/en/build-with-claude/refusals-and-fallback (2026-09-27):
 // a refusal before any output is billed only for bio / frontier_llm /
-// reasoning_extraction; any other category, or null, is not billed.
+// reasoning_extraction; any other category, or null, is not billed. A refusal
+// after output began is billed at normal rates in any category.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -20,8 +21,8 @@ const FABLE = getModel("claude-fable-5");
 // Shape of Anthropic's documented refusal example: 412 in, 0 out, empty content.
 const USAGE = { inputTokens: 412, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0 };
 
-function assertNotCharged(category) {
-  const r = buildDeclinedReceipt(FABLE, USAGE, category, NOW);
+function assertNotCharged(category, usage = USAGE) {
+  const r = buildDeclinedReceipt(FABLE, usage, category, true, NOW);
   assert.equal(r.directUsd, 0);
   assert.equal(r.groundingUsd, 0);
   assert.equal(r.infraUsd, 0);
@@ -30,10 +31,11 @@ function assertNotCharged(category) {
   assert.equal(r.totalUsd, 0);
   assert.equal(r.chargedUsd, 0);
   // The reported counts stay visible, labeled as reported rather than billed.
-  assert.deepEqual(r.usage, USAGE);
-  assert.equal(r.uncachedInputTokens, 412);
+  assert.deepEqual(r.usage, usage);
+  assert.equal(r.uncachedInputTokens, usage.inputTokens);
   assert.deepEqual(r.refusal, {
     category,
+    preOutput: true,
     providerBilled: false,
     usageLabel: "reported, not billed by provider",
   });
@@ -41,7 +43,7 @@ function assertNotCharged(category) {
 }
 
 function assertCharged(category) {
-  const r = buildDeclinedReceipt(FABLE, USAGE, category, NOW);
+  const r = buildDeclinedReceipt(FABLE, USAGE, category, true, NOW);
   const normal = buildReceipt(FABLE, USAGE, 0, NOW);
   // Exactly the ordinary cost-plus receipt, plus the refusal block.
   const { refusal, ...rest } = r;
@@ -51,6 +53,7 @@ function assertCharged(category) {
   assert.ok(Math.abs(r.totalUsd - 0.004944) < 1e-9, `totalUsd ${r.totalUsd}`);
   assert.deepEqual(refusal, {
     category,
+    preOutput: true,
     providerBilled: true,
     usageLabel: "billed by provider — pre-output refusal in a billed category",
   });
@@ -72,13 +75,20 @@ test("a category not in the pinned table is treated as unbilled (gate absorbs, n
   assertNotCharged("some_future_category");
 });
 
-test("a refusal carrying output tokens is billed in any category (mid-output rule)", () => {
+test("ledger shape (2013 in / 7 out, empty content): output tokens alone don't make it billed", () => {
+  // Credits ledger seq 79, 2026-08-08: a Fable 5 decline debited $0.024576.
+  // Empty content = pre-output, so a non-billed category charges nothing.
+  assertNotCharged("cyber", { inputTokens: 2013, outputTokens: 7 });
+});
+
+test("a refusal after output began is billed in any category (mid-output rule)", () => {
   const usage = { inputTokens: 412, outputTokens: 30 };
-  assert.equal(providerBillsRefusal("cyber", 30), true);
-  const r = buildDeclinedReceipt(FABLE, usage, "cyber", NOW);
+  assert.equal(providerBillsRefusal("cyber", false), true);
+  const r = buildDeclinedReceipt(FABLE, usage, "cyber", false, NOW);
   const { refusal, ...rest } = r;
   assert.deepEqual(rest, buildReceipt(FABLE, usage, 0, NOW));
   assert.equal(refusal.providerBilled, true);
+  assert.equal(refusal.preOutput, false);
   assert.match(refusal.usageLabel, /declined after output began/);
 });
 
