@@ -1123,8 +1123,12 @@ export async function POST(req: Request) {
   // and the question that produced it — is therefore never dropped: if it still
   // does not fit, the answer is shortened in the middle, head and tail kept,
   // behind a marker that says the gate cut it (so no model mistakes it for text
-  // the earlier model wrote). Keeping that question also keeps the history
-  // opening on a user turn, which providers expect.
+  // the earlier model wrote).
+  //
+  // Whatever is dropped, the history must still OPEN ON A USER TURN: Anthropic
+  // rejects an assistant-first history with a 400, and the same thread state
+  // would fail on every retry. Dropping stops only on a user turn, never merely
+  // because the budget fits.
   const historyBudget = spec.tier === "premium" ? MAX_HISTORY_CHARS_PREMIUM : MAX_HISTORY_CHARS;
   const historyChars = () => messages.reduce((s, m) => s + m.content.length, 0);
   const lastAnswerAt = messages.length >= 2 && messages[messages.length - 2].role === "assistant"
@@ -1134,13 +1138,13 @@ export async function POST(req: Request) {
     : lastAnswerAt > 0 && messages[lastAnswerAt - 1].role === "user" ? lastAnswerAt - 1 : lastAnswerAt;
   let historyTrimmed = 0;
   let droppable = protectFrom;
-  while (droppable > 0 && historyChars() > historyBudget) {
+  while (droppable > 0 && (historyChars() > historyBudget || messages[0].role !== "user")) {
     messages.shift();
     historyTrimmed += 1;
     droppable -= 1;
   }
   let answerShortenedBy = 0;
-  if (historyChars() > historyBudget && lastAnswerAt >= 0) {
+  if (historyChars() > historyBudget && lastAnswerAt >= 0 && messages[0].role === "user") {
     const answerIdx = messages.length - 2;
     const answer = messages[answerIdx].content;
     const marker = (n: number) =>
@@ -1148,18 +1152,28 @@ export async function POST(req: Request) {
       `${spec.name}'s history budget; the start and end are kept …]\n\n`;
     const room = historyBudget - (historyChars() - answer.length) - marker(answer.length).length;
     if (room >= 2000) {
-      const head = Math.floor(room / 3);
-      const tail = room - head;
-      answerShortenedBy = answer.length - head - tail;
+      // String indices are UTF-16 code units: never cut between the two halves
+      // of a surrogate pair (emoji and other non-BMP characters), or the lone
+      // half makes the request body invalid JSON for the provider. Nudging the
+      // cut inward only keeps less, so the budget still holds.
+      let keepHeadTo = Math.floor(room / 3);
+      let keepTailFrom = answer.length - (room - keepHeadTo);
+      const isHigh = (i: number) => { const c = answer.charCodeAt(i); return c >= 0xd800 && c <= 0xdbff; };
+      const isLow = (i: number) => { const c = answer.charCodeAt(i); return c >= 0xdc00 && c <= 0xdfff; };
+      if (keepHeadTo > 0 && isHigh(keepHeadTo - 1)) keepHeadTo -= 1;
+      if (keepTailFrom < answer.length && isLow(keepTailFrom)) keepTailFrom += 1;
+      answerShortenedBy = keepTailFrom - keepHeadTo;
       messages[answerIdx] = {
         ...messages[answerIdx],
-        content: answer.slice(0, head) + marker(answerShortenedBy) + answer.slice(answer.length - tail),
+        content: answer.slice(0, keepHeadTo) + marker(answerShortenedBy) + answer.slice(keepTailFrom),
       };
     }
   }
-  while (messages.length > 1 && historyChars() > historyBudget) {
-    // Last resort (not reachable with MAX_INPUT_CHARS well under every budget):
-    // the old behaviour, oldest first.
+  while (messages.length > 1 && (historyChars() > historyBudget || messages[0].role !== "user")) {
+    // Last resort: oldest first. Reached only by shapes the gate's own client
+    // never sends (e.g. a bare [answer, query]) or a latest exchange too large
+    // to shorten; the final message is always the user's query, so this ends
+    // user-first.
     messages.shift();
     historyTrimmed += 1;
   }

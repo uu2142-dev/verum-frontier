@@ -906,8 +906,8 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
             const next = gone?.successorId ? (d.models as ModelInfo[]).find(m => m.id === gone.successorId) : undefined;
             if (gone && next) {
               initial = next.id;
-              localStorage.setItem(MODEL_KEY, next.id);
               setModelNotice(`${gone.name} was retired from the gate on ${gone.retiredOn}. Your saved pick now uses ${next.name}.`);
+              localStorage.setItem(MODEL_KEY, next.id);
             }
           }
         } catch { /* ignore */ }
@@ -1633,7 +1633,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
           {([["save", "🐇 ALICE · SAVE $"], ["best", "🐇 ALICE · BEST"]] as const).map(([m, label]) => (
             <button
               key={m}
-              onClick={() => setRouterMode(r => (r === m ? null : m))}
+              onClick={() => { setRouterMode(r => (r === m ? null : m)); setModelNotice(null); }}
               title="ALICE picks the model in YOUR browser — the rule that fired is shown on every answer. Sovereign routing."
               style={{
                 fontFamily: "monospace", fontSize: 8, letterSpacing: "0.08em", cursor: "pointer",
@@ -1701,7 +1701,7 @@ export default function LiveGate({ onFallbackToDemo, onOpenMemories }: { onFallb
                               return (
                                 <button key={m.id} role="option" aria-selected={active} aria-label={explain} title={explain}
                                   onClick={() => {
-                                    setModelId(m.id); setRouterMode(null);
+                                    setModelId(m.id); setRouterMode(null); setModelNotice(null);
                                     try { localStorage.setItem(MODEL_KEY, m.id); } catch { /* ignore */ }
                                     // Credits-only pick at zero balance opens the buy row —
                                     // reachable by keyboard/touch, and the pre-send estimate
