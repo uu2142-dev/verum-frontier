@@ -17,7 +17,13 @@ import {
 } from "../lib/pricing.ts";
 
 const NOW = new Date("2026-09-27T12:00:00Z");
-const FABLE = getModel("claude-fable-5");
+// Fable 5.1 replaced Fable 5 on the gate (2026-09-27) at the same $10/$50, so the
+// expected dollar figures below are unchanged. Guarded, so a future retirement
+// fails here by name instead of as a TypeError deep inside buildReceipt.
+const FABLE = getModel("claude-fable-5.1");
+assert.ok(FABLE, "test fixture model claude-fable-5.1 is not in the live registry");
+const OPUS55 = getModel("claude-opus-5.5");
+assert.ok(OPUS55, "test fixture model claude-opus-5.5 is not in the live registry");
 // Shape of Anthropic's documented refusal example: 412 in, 0 out, empty content.
 const USAGE = { inputTokens: 412, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0 };
 
@@ -90,6 +96,23 @@ test("a refusal after output began is billed in any category (mid-output rule)",
   assert.equal(refusal.providerBilled, true);
   assert.equal(refusal.preOutput, false);
   assert.match(refusal.usageLabel, /declined after output began/);
+});
+
+// Opus 5.5 ships stricter cyber + bio classifiers than Opus 4.8, so it is the
+// premium seat most likely to decline — the rule must hold on its rates too.
+test("Opus 5.5 cyber refusal before output: $0 charged", () => {
+  const r = buildDeclinedReceipt(OPUS55, USAGE, "cyber", true, NOW);
+  assert.equal(r.totalUsd, 0);
+  assert.equal(r.chargedUsd, 0);
+  assert.equal(r.refusal.providerBilled, false);
+});
+
+test("Opus 5.5 bio refusal before output: charged at $4/M input", () => {
+  const r = buildDeclinedReceipt(OPUS55, USAGE, "bio", true, NOW);
+  // 412 input tokens × $4/M = $0.001648 direct; × 1.20 cost-plus = $0.0019776.
+  assert.ok(Math.abs(r.directUsd - 0.001648) < 1e-12, `directUsd ${r.directUsd}`);
+  assert.ok(Math.abs(r.totalUsd - 0.0019776) < 1e-9, `totalUsd ${r.totalUsd}`);
+  assert.equal(r.refusal.providerBilled, true);
 });
 
 test("an answered turn's receipt carries no refusal block (RECEIPT leaf shape unchanged)", () => {
