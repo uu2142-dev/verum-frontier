@@ -445,7 +445,8 @@ export const SUPPORT_SPLIT = {
 
 export interface Usage {
   inputTokens: number;       // TOTAL prompt tokens (cached + uncached)
-  outputTokens: number;      // completion tokens (includes reasoning where the provider folds it in)
+  outputTokens: number;      // ALL billed output: visible answer + reasoning, counted once (see lib/usage.ts)
+  reasoningTokens?: number;  // the reasoning PART of outputTokens, as reported — shown, never added again
   cachedInputTokens?: number; // the cache-hit portion of inputTokens, billed at the cache rate
   cacheWriteTokens?: number;  // the portion written INTO the cache, billed ABOVE the input rate
 }

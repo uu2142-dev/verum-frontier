@@ -33,6 +33,7 @@ import { MODEL_REGISTRY, PREMIUM_MODELS, RETIRED_MODELS, PRICE_SHEET_DATE, getMo
 import { FREE_DAILY_LIMIT, QUOTA_COOKIE, decodeQuota, encodeQuota, quotaResetIso } from "@/lib/quota";
 import { debitWallet, walletBalance } from "@/lib/ledger";
 import { stripeConfigured, stripeTestMode } from "@/lib/stripe";
+import { chatCompletionsUsage, responsesUsage } from "@/lib/usage";
 
 export const runtime = "nodejs";
 // Vercel Hobby's real function ceiling is 300s with fluid compute (default),
@@ -718,11 +719,9 @@ async function callOpenAICompatible(
   }
   const data = await res.json();
   const text: string = (data.choices?.[0]?.message?.content ?? "").trim();
-  const usage: Usage = {
-    inputTokens: data.usage?.prompt_tokens ?? 0, // OpenAI/xAI Chat: prompt_tokens INCLUDES cached
-    outputTokens: data.usage?.completion_tokens ?? 0,
-    cachedInputTokens: data.usage?.prompt_tokens_details?.cached_tokens ?? 0,
-  };
+  // xAI reports reasoning OUTSIDE completion_tokens, OpenAI inside it; the
+  // parser bills it exactly once either way (lib/usage.ts).
+  const usage = chatCompletionsUsage(data.usage);
 
   // xAI citations. The docs show `citations` but are not explicit about the exact
   // location or the billed-count field on the raw API, so both plausible spots
@@ -863,15 +862,9 @@ async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], mem
   // (shape drift), bill a floor of ONE call rather than zero or a guess.
   if (searchRequests === 0 && sources.length > 0) searchRequests = 1;
 
-  // Responses API: input_tokens INCLUDES cached; the cached portion is reported
-  // under input_tokens_details (OpenAI) or prompt_tokens_details (xAI compat).
-  const cachedIn = data.usage?.input_tokens_details?.cached_tokens
-    ?? data.usage?.prompt_tokens_details?.cached_tokens ?? 0;
-  const usage: Usage = {
-    inputTokens: data.usage?.input_tokens ?? 0,
-    outputTokens: data.usage?.output_tokens ?? 0,
-    cachedInputTokens: cachedIn,
-  };
+  // Same reasoning split as Chat Completions: xAI's output_tokens excludes it,
+  // OpenAI's includes it (lib/usage.ts).
+  const usage = responsesUsage(data.usage);
   const truncated = data.status === "incomplete";
   return { text, usage, truncated, sources, searchQueries, searchRequests };
 }

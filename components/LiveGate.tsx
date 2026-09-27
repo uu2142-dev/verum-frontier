@@ -43,7 +43,7 @@ interface Leaf { label: string; sha256: string; }
 interface Receipt {
   priceSheetDate: string; model: string;
   rates: { inPerM: number; outPerM: number };
-  usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+  usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningTokens?: number };
   directUsd: number;
   uncachedInputTokens?: number; cachedInputTokens?: number; cacheRatePerM?: number;
   groundingUsd?: number; searchRequests?: number; searchUnitUsd?: number;
@@ -612,7 +612,8 @@ function ReceiptCard({ r, color }: { r: Receipt; color: string }) {
       ) : (
         <Sub k={`${r.usage.inputTokens.toLocaleString()} in × $${fmtRate(r.rates.inPerM)}/M`} />
       )}
-      {!unbilled && <Sub k={`${r.usage.outputTokens.toLocaleString()} out × $${fmtRate(r.rates.outPerM)}/M`} />}
+      {!unbilled && <Sub k={`${r.usage.outputTokens.toLocaleString()} out${
+        r.usage.reasoningTokens ? ` (incl. ${r.usage.reasoningTokens.toLocaleString()} reasoning)` : ""} × $${fmtRate(r.rates.outPerM)}/M`} />}
       {!!r.groundingUsd && r.groundingUsd > 0 && (
         <>
           <Row k="RETRIEVAL (web search)" v={fmtUsd(r.groundingUsd)} color="#58a6ff" />
