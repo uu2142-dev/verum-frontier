@@ -106,12 +106,20 @@ export function searchUnitUsd(provider: Provider): number {
 //   Google  Gemini context cache ≈ 0.25×
 //   Groq    no prompt caching → 1.0× (cached count is always 0 anyway)
 // Writing a prompt into the cache costs MORE than not caching at all: 1.25× the
-// input rate at the 5-minute TTL (2× at the 1-hour TTL). Providers report those
-// tokens in a separate field, and a receipt that ignores it would drop real
-// billed tokens on the floor — the mirror image of the cache-read overcharge.
-// We deliberately send no cache_control (see the note on cacheMultiplier), so
-// this is currently always zero; it is wired so the arithmetic stays correct if
-// that ever changes rather than becoming a silent undercount.
+// input rate — Anthropic's at the 5-minute TTL (2× at the 1-hour TTL), OpenAI's
+// on GPT-5.6 and later. Providers report those tokens in a separate field, and a
+// receipt that ignores it would drop real billed tokens on the floor — the
+// mirror image of the cache-read overcharge. Per provider:
+//   Anthropic  always zero today — we send no cache_control (see the note on
+//              cacheMultiplier); wired so the arithmetic stays right if it changes.
+//   OpenAI     NOT zero. GPT-5.6 caches implicitly by default, writing through
+//              the latest user message once the prompt reaches 1,024 visible
+//              tokens (developers.openai.com/api/docs/guides/prompt-caching,
+//              read 2026-09-27), so gpt-5.6-sol receipts carry the writes OpenAI
+//              reports (cache_write_tokens, read in lib/usage.ts). 1.25 × $4.00
+//              = $5.00, the published Sol cache-write rate.
+//   Others     zero. xAI documents no cache-write field or charge (its caching
+//              page, read 2026-09-27); the Google and Groq parsers never set one.
 export const CACHE_WRITE_MULTIPLIER = 1.25;
 
 export function cacheMultiplier(provider: Provider): number {

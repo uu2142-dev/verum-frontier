@@ -89,35 +89,35 @@ const OPENAI_CHAT = {
 };
 
 test("xAI Responses: reasoning is added to the visible output", () => {
-  assert.deepEqual(responsesUsage(XAI_RESPONSES), {
+  assert.deepEqual(responsesUsage(XAI_RESPONSES, "xai"), {
     inputTokens: 32, outputTokens: 119, cachedInputTokens: 8, reasoningTokens: 110,
   });
 });
 
 test("xAI Chat Completions: reasoning is added to the visible output", () => {
-  assert.deepEqual(chatCompletionsUsage(XAI_CHAT), {
+  assert.deepEqual(chatCompletionsUsage(XAI_CHAT, "xai"), {
     inputTokens: 32, outputTokens: 103, cachedInputTokens: 6, reasoningTokens: 94,
   });
 });
 
 test("xAI Responses with chat-shaped field names parses the same", () => {
-  assert.deepEqual(responsesUsage(XAI_RESPONSES_CHAT_SHAPED), responsesUsage(XAI_RESPONSES));
+  assert.deepEqual(responsesUsage(XAI_RESPONSES_CHAT_SHAPED, "xai"), responsesUsage(XAI_RESPONSES, "xai"));
 });
 
 test("no reasoning: output unchanged and no reasoningTokens field", () => {
-  assert.deepEqual(chatCompletionsUsage(XAI_CHAT_NO_REASONING), {
+  assert.deepEqual(chatCompletionsUsage(XAI_CHAT_NO_REASONING, "xai"), {
     inputTokens: 31, outputTokens: 11, cachedInputTokens: 0,
   });
 });
 
 test("OpenAI Responses: reasoning already in output_tokens is not double-counted", () => {
-  assert.deepEqual(responsesUsage(OPENAI_RESPONSES), {
+  assert.deepEqual(responsesUsage(OPENAI_RESPONSES, "openai"), {
     inputTokens: 75, outputTokens: 1186, cachedInputTokens: 0, reasoningTokens: 1024,
   });
 });
 
 test("OpenAI Chat Completions: reasoning already in completion_tokens is not double-counted", () => {
-  assert.deepEqual(chatCompletionsUsage(OPENAI_CHAT), {
+  assert.deepEqual(chatCompletionsUsage(OPENAI_CHAT, "openai"), {
     inputTokens: 75, outputTokens: 1186, cachedInputTokens: 0, reasoningTokens: 1024,
   });
 });
@@ -139,13 +139,13 @@ test("guard: without total_tokens, adds reasoning only when it cannot be part of
 
 test("missing or malformed usage yields zeros, not NaN", () => {
   const zero = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
-  assert.deepEqual(chatCompletionsUsage(undefined), zero);
-  assert.deepEqual(responsesUsage(null), zero);
-  assert.deepEqual(responsesUsage({ output_tokens: "9", output_tokens_details: { reasoning_tokens: -5 } }), zero);
+  assert.deepEqual(chatCompletionsUsage(undefined, "openai"), zero);
+  assert.deepEqual(responsesUsage(null, "openai"), zero);
+  assert.deepEqual(responsesUsage({ output_tokens: "9", output_tokens_details: { reasoning_tokens: -5 } }, "openai"), zero);
 });
 
 test("grok-4.5 receipt bills reasoning at the output rate and shows the split", () => {
-  const r = buildReceipt(GROK, responsesUsage(XAI_RESPONSES), 0, NOW);
+  const r = buildReceipt(GROK, responsesUsage(XAI_RESPONSES, "xai"), 0, NOW);
   // 24 fresh in × $2/M + 8 cached × $0.30/M + (9 + 110) out × $6/M
   //   = 0.000048 + 0.0000024 + 0.000714 = $0.0007644
   close(r.directUsd, 0.0007644, "directUsd");
@@ -159,7 +159,7 @@ test("grok-4.5 receipt bills reasoning at the output rate and shows the split", 
 });
 
 test("gpt-5.6-sol receipt is unchanged by the fix", () => {
-  const r = buildReceipt(SOL, responsesUsage(OPENAI_RESPONSES), 0, NOW);
+  const r = buildReceipt(SOL, responsesUsage(OPENAI_RESPONSES, "openai"), 0, NOW);
   // 75 in × $4/M + 1186 out × $20/M = 0.0003 + 0.02372 = $0.02402
   close(r.directUsd, 0.02402, "directUsd");
 });

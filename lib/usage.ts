@@ -25,7 +25,24 @@
 // cannot be a part of it). OpenAI's reasoning is always a subset of its output
 // and its total is input + output, so it never qualifies and is never
 // double-counted. With neither proof, the reported output stands.
-import type { Usage } from "./pricing";
+//
+// Cache WRITES are read for OpenAI only, and that one does branch on the
+// provider. GPT-5.6 caches by default and bills what it writes at 1.25× input
+// (pinned from OpenAI's own docs, 2026-09-27):
+//   "For GPT-5.6 and later, cache writes cost 1.25× the standard, uncached
+//    input-token rate." — developers.openai.com/api/docs/guides/prompt-caching
+//   prompt_cache_options.mode "Defaults to `implicit`. With `implicit`, OpenAI
+//    creates one implicit breakpoint" — on both /v1/responses and
+//    /v1/chat/completions (developers.openai.com/api/reference/resources/
+//    responses/methods/create and .../resources/chat)
+// Reported as input_tokens_details.cache_write_tokens (Responses) and
+// prompt_tokens_details.cache_write_tokens (Chat Completions). Those tokens are
+// INSIDE input_tokens and disjoint from cached_tokens — the guide's own cost
+// formula is "ordinaryInputTokens = inputTokens - cachedTokens - cacheWriteTokens".
+// Unread, they were receipted at the plain input rate: 25% under on each one.
+// xAI documents no cache-write field or rate, so a same-named field showing up
+// there has no pinned price to bill at; it is ignored until one is pinned.
+import type { Provider, Usage } from "./pricing";
 
 export interface OpenAIShapeUsage {
   prompt_tokens?: unknown;
@@ -33,8 +50,8 @@ export interface OpenAIShapeUsage {
   input_tokens?: unknown;
   output_tokens?: unknown;
   total_tokens?: unknown;
-  prompt_tokens_details?: { cached_tokens?: unknown } | null;
-  input_tokens_details?: { cached_tokens?: unknown } | null;
+  prompt_tokens_details?: { cached_tokens?: unknown; cache_write_tokens?: unknown } | null;
+  input_tokens_details?: { cached_tokens?: unknown; cache_write_tokens?: unknown } | null;
   completion_tokens_details?: { reasoning_tokens?: unknown } | null;
   output_tokens_details?: { reasoning_tokens?: unknown } | null;
 }
@@ -59,7 +76,7 @@ export function billedOutputTokens(input: number, output: number, reasoning: num
   return reportedSeparately ? output + reasoning : output;
 }
 
-function build(input: number, output: number, reasoning: number, cached: number, total: number | null): Usage {
+function build(input: number, output: number, reasoning: number, cached: number, written: number, total: number | null): Usage {
   const usage: Usage = {
     inputTokens: input,
     outputTokens: billedOutputTokens(input, output, reasoning, total),
@@ -68,30 +85,36 @@ function build(input: number, output: number, reasoning: number, cached: number,
   // Shown on the receipt as the part of outputTokens that was reasoning. Absent
   // when none was reported, so those receipts keep the shape they had.
   if (reasoning > 0) usage.reasoningTokens = reasoning;
+  // Same rule for cache writes: present only when some were billed.
+  if (written > 0) usage.cacheWriteTokens = written;
   return usage;
 }
 
-// Chat Completions: prompt_tokens INCLUDES cached.
-export function chatCompletionsUsage(u: Raw): Usage {
+// Chat Completions: prompt_tokens INCLUDES cached and cache-written tokens.
+export function chatCompletionsUsage(u: Raw, provider: Provider): Usage {
   return build(
     first(u?.prompt_tokens),
     first(u?.completion_tokens),
     first(u?.completion_tokens_details?.reasoning_tokens),
     first(u?.prompt_tokens_details?.cached_tokens),
+    provider === "openai" ? first(u?.prompt_tokens_details?.cache_write_tokens) : 0,
     count(u?.total_tokens),
   );
 }
 
-// Responses API: input_tokens INCLUDES cached; the cached portion is under
-// input_tokens_details (OpenAI) or prompt_tokens_details (xAI compat). The
-// chat-shaped names are read as a fallback — xAI documents them on
+// Responses API: input_tokens INCLUDES cached and cache-written tokens; those
+// portions are under input_tokens_details (OpenAI) or prompt_tokens_details (xAI
+// compat). The chat-shaped names are read as a fallback — xAI documents them on
 // GET /v1/responses/{id} — so a shape change can't zero a receipt.
-export function responsesUsage(u: Raw): Usage {
+export function responsesUsage(u: Raw, provider: Provider): Usage {
   return build(
     first(u?.input_tokens, u?.prompt_tokens),
     first(u?.output_tokens, u?.completion_tokens),
     first(u?.output_tokens_details?.reasoning_tokens, u?.completion_tokens_details?.reasoning_tokens),
     first(u?.input_tokens_details?.cached_tokens, u?.prompt_tokens_details?.cached_tokens),
+    provider === "openai"
+      ? first(u?.input_tokens_details?.cache_write_tokens, u?.prompt_tokens_details?.cache_write_tokens)
+      : 0,
     count(u?.total_tokens),
   );
 }

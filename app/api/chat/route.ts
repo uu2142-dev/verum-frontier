@@ -720,8 +720,9 @@ async function callOpenAICompatible(
   const data = await res.json();
   const text: string = (data.choices?.[0]?.message?.content ?? "").trim();
   // xAI reports reasoning OUTSIDE completion_tokens, OpenAI inside it; the
-  // parser bills it exactly once either way (lib/usage.ts).
-  const usage = chatCompletionsUsage(data.usage);
+  // parser bills it exactly once either way, and bills OpenAI's cache writes
+  // (lib/usage.ts).
+  const usage = chatCompletionsUsage(data.usage, spec.provider);
 
   // xAI citations. The docs show `citations` but are not explicit about the exact
   // location or the billed-count field on the raw API, so both plausible spots
@@ -863,8 +864,8 @@ async function callOpenAIResponses(spec: ModelSpec, messages: ChatMessage[], mem
   if (searchRequests === 0 && sources.length > 0) searchRequests = 1;
 
   // Same reasoning split as Chat Completions: xAI's output_tokens excludes it,
-  // OpenAI's includes it (lib/usage.ts).
-  const usage = responsesUsage(data.usage);
+  // OpenAI's includes it; OpenAI's cache writes are billed too (lib/usage.ts).
+  const usage = responsesUsage(data.usage, spec.provider);
   const truncated = data.status === "incomplete";
   return { text, usage, truncated, sources, searchQueries, searchRequests };
 }
